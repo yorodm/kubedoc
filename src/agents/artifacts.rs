@@ -3,8 +3,10 @@ use rig_core::{
     agent::{Agent, AgentBuilder},
     completion::CompletionModel,
 };
+use tokio::sync::mpsc;
 
 use crate::tools::{artifacts as file_tools, kube_client};
+use crate::tui::progress::{ProgressEvent, ProgressHook};
 
 const ARTIFACTS_PREAMBLE: &str = r#"
 You are a Kubernetes manifest generator. When asked to create or modify resources:
@@ -29,8 +31,12 @@ Important rules:
 When the user asks you to save or write manifests to disk, use write_artifact.
 "#;
 
-pub fn build<M: CompletionModel + 'static>(client: Client, model: M) -> anyhow::Result<Agent<M>> {
-    let agent = AgentBuilder::new(model)
+pub fn build<M: CompletionModel + 'static>(
+    client: Client,
+    model: M,
+    progress_tx: Option<mpsc::UnboundedSender<ProgressEvent>>,
+) -> anyhow::Result<Agent<M>> {
+    let mut builder = AgentBuilder::new(model)
         .name("artifacts")
         .description("Generate Kubernetes YAML manifests for deployments, services, configmaps, and other resources. Use this when the user wants to create or modify resources.")
         .preamble(ARTIFACTS_PREAMBLE)
@@ -45,7 +51,11 @@ pub fn build<M: CompletionModel + 'static>(client: Client, model: M) -> anyhow::
         .tool(file_tools::GenerateManifest)
         .tool(file_tools::ValidateManifest)
         .tool(file_tools::ListAvailableApiResources { client: client.clone() })
-        .default_max_turns(20)
-        .build();
-    Ok(agent)
+        .default_max_turns(20);
+
+    if let Some(tx) = progress_tx {
+        builder = builder.add_hook(ProgressHook::new(tx));
+    }
+
+    Ok(builder.build())
 }

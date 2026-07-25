@@ -11,15 +11,26 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Paragraph, Wrap},
 };
+use tokio::sync::mpsc;
 
 use crate::agents::coordinator::Coordinator;
 use crate::tui::event::{Event, EventHandler};
+use crate::tui::progress::ProgressEvent;
 use rig_core::completion::CompletionModel;
 
 const MAX_VISIBLE_MESSAGES: usize = 1000;
 
+#[derive(Debug, Clone)]
+enum MessageRole {
+    User,
+    Assistant,
+    System,
+    Error,
+    Step { agent: String },
+}
+
 struct Message {
-    role: String,
+    role: MessageRole,
     content: String,
 }
 
@@ -28,6 +39,7 @@ pub struct App {
     input: String,
     scroll_offset: usize,
     loading: bool,
+    auto_scroll: bool,
 }
 
 impl App {
@@ -37,18 +49,66 @@ impl App {
             input: String::new(),
             scroll_offset: 0,
             loading: false,
+            auto_scroll: true,
         }
     }
 
-    fn add_message(&mut self, role: &str, content: &str) {
+    fn add_message(&mut self, role: MessageRole, content: &str) {
         self.messages.push_back(Message {
-            role: role.to_string(),
+            role,
             content: content.to_string(),
         });
         if self.messages.len() > MAX_VISIBLE_MESSAGES {
             self.messages.pop_front();
         }
-        self.scroll_offset = 0;
+        if self.auto_scroll {
+            self.scroll_offset = 0;
+        }
+    }
+
+    fn drain_progress(&mut self, rx: &mut mpsc::UnboundedReceiver<ProgressEvent>) {
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                ProgressEvent::ToolCall {
+                    agent,
+                    tool_name,
+                    args,
+                } => {
+                    let content = if args.is_empty() {
+                        format!("[{agent}] Calling {tool_name}...")
+                    } else {
+                        format!("[{agent}] Calling {tool_name}({args})...")
+                    };
+                    self.add_message(MessageRole::Step { agent }, &content);
+                }
+                ProgressEvent::ToolResult {
+                    agent,
+                    tool_name,
+                    result,
+                } => {
+                    let content = format!("[{agent}] {tool_name} returned: {result}");
+                    self.add_message(MessageRole::Step { agent }, &content);
+                }
+                ProgressEvent::LlmTurn { agent, turn } => {
+                    self.add_message(
+                        MessageRole::Step {
+                            agent: agent.clone(),
+                        },
+                        &format!("[{agent}] Thinking (turn {turn})..."),
+                    );
+                }
+                ProgressEvent::ModelTurnFinished { agent, text } => {
+                    if !text.is_empty() {
+                        self.add_message(
+                            MessageRole::Step {
+                                agent: agent.clone(),
+                            },
+                            &format!("[{agent}] {text}"),
+                        );
+                    }
+                }
+            }
+        }
     }
 
     fn render(&self, frame: &mut ratatui::Frame) {
@@ -77,16 +137,24 @@ impl App {
             .messages
             .iter()
             .flat_map(|msg| {
-                let style = match msg.role.as_str() {
-                    "user" => Style::default().fg(Color::Green).bold(),
-                    "assistant" => Style::default().fg(Color::Cyan),
-                    "error" => Style::default().fg(Color::Red),
-                    _ => Style::default().fg(Color::DarkGray),
-                };
-                let prefix = match msg.role.as_str() {
-                    "user" => "You",
-                    "assistant" => "Agent",
-                    _ => &msg.role,
+                let (style, prefix) = match &msg.role {
+                    MessageRole::User => (Style::default().fg(Color::Green).bold(), "You"),
+                    MessageRole::Assistant => (Style::default().fg(Color::Cyan), "Agent"),
+                    MessageRole::Error => (Style::default().fg(Color::Red), "Error"),
+                    MessageRole::System => (Style::default().fg(Color::DarkGray), "System"),
+                    MessageRole::Step { agent } => {
+                        let style = Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::ITALIC);
+                        return vec![
+                            Line::from(Span::styled(
+                                format!(" {agent}>"),
+                                style.add_modifier(Modifier::BOLD),
+                            )),
+                            Line::from(Span::styled(format!("   {}", msg.content), style)),
+                            Line::from(""),
+                        ];
+                    }
                 };
                 let header_line = Line::from(Span::styled(
                     format!(" {prefix}>"),
@@ -145,10 +213,14 @@ impl App {
 
     fn scroll_up(&mut self) {
         self.scroll_offset = self.scroll_offset.saturating_add(3);
+        self.auto_scroll = false;
     }
 
     fn scroll_down(&mut self) {
         self.scroll_offset = self.scroll_offset.saturating_sub(3);
+        if self.scroll_offset == 0 {
+            self.auto_scroll = true;
+        }
     }
 }
 
@@ -160,6 +232,7 @@ pub async fn run<M: CompletionModel + Clone + 'static>(
     session_manager: Option<&crate::session::SessionManager>,
     mut session_data: Option<crate::session::SessionData>,
     audit_log: Option<Arc<crate::audit::AuditLog>>,
+    mut progress_rx: mpsc::UnboundedReceiver<ProgressEvent>,
 ) -> anyhow::Result<()> {
     let mut terminal = ratatui::try_init()?;
 
@@ -169,7 +242,7 @@ pub async fn run<M: CompletionModel + Clone + 'static>(
 
     let mut app = App::new();
     app.add_message(
-        "system",
+        MessageRole::System,
         &format!("Session: {session_id} — type your Kubernetes questions below."),
     );
 
@@ -180,6 +253,7 @@ pub async fn run<M: CompletionModel + Clone + 'static>(
         session_manager,
         &mut session_data,
         audit_log.as_deref(),
+        &mut progress_rx,
     )
     .await;
 
@@ -202,27 +276,28 @@ async fn run_loop<M: CompletionModel + Clone + 'static>(
     session_manager: Option<&crate::session::SessionManager>,
     session_data: &mut Option<crate::session::SessionData>,
     audit_log: Option<&crate::audit::AuditLog>,
+    progress_rx: &mut mpsc::UnboundedReceiver<ProgressEvent>,
 ) -> anyhow::Result<()> {
     let mut events = EventHandler::new(Duration::from_millis(100));
     let mut agent_fut: Option<AgentFuture> = None;
 
     loop {
+        app.drain_progress(progress_rx);
         terminal.draw(|frame| app.render(frame))?;
 
         if app.loading {
-            // While waiting for agent, race the agent future against terminal events.
             if let Some(fut) = agent_fut.as_mut() {
                 tokio::select! {
                     result = fut.as_mut() => {
                         match result {
                             Ok(response) => {
-                                app.add_message("assistant", &response);
+                                app.add_message(MessageRole::Assistant, &response);
                                 if let (Some(sm), Some(sd)) = (session_manager, session_data.as_mut()) {
                                     let _ = sm.add_entry(sd, "assistant", &response);
                                 }
                             }
                             Err(e) => {
-                                app.add_message("error", &format!("Agent error: {e}"));
+                                app.add_message(MessageRole::Error, &format!("Agent error: {e}"));
                             }
                         }
                         app.loading = false;
@@ -237,6 +312,18 @@ async fn run_loop<M: CompletionModel + Clone + 'static>(
                                     KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                         app.messages.clear();
                                     }
+                                    KeyCode::Up | KeyCode::Char('k') => app.scroll_up(),
+                                    KeyCode::Down | KeyCode::Char('j') => app.scroll_down(),
+                                    KeyCode::PageUp => {
+                                        app.scroll_offset = app.scroll_offset.saturating_add(20);
+                                        app.auto_scroll = false;
+                                    }
+                                    KeyCode::PageDown => {
+                                        app.scroll_offset = app.scroll_offset.saturating_sub(20);
+                                        if app.scroll_offset == 0 {
+                                            app.auto_scroll = true;
+                                        }
+                                    }
                                     _ => {}
                                 }
                             }
@@ -248,7 +335,6 @@ async fn run_loop<M: CompletionModel + Clone + 'static>(
             continue;
         }
 
-        // Not loading — wait for next event.
         let event = match events.next().await {
             Some(e) => e,
             None => break,
@@ -270,19 +356,15 @@ async fn run_loop<M: CompletionModel + Clone + 'static>(
                 let input = std::mem::take(&mut app.input);
 
                 if input.starts_with('/') {
-                    match handle_slash_command(
-                        &input,
-                        app,
-                        session_manager,
-                        session_data.as_mut(),
-                    ) {
+                    match handle_slash_command(&input, app, session_manager, session_data.as_mut())
+                    {
                         CommandResult::Continue => {}
                         CommandResult::Exit => break,
                     }
                     continue;
                 }
 
-                app.add_message("user", &input);
+                app.add_message(MessageRole::User, &input);
 
                 if let Some(log) = audit_log {
                     let _ = log.user_prompt(&input);
@@ -293,27 +375,28 @@ async fn run_loop<M: CompletionModel + Clone + 'static>(
                 }
 
                 app.loading = true;
+                app.auto_scroll = true;
                 let prompt = input;
                 let coord = coordinator.clone();
                 agent_fut = Some(Box::pin(async move { coord.run(&prompt).await }));
+            }
+            KeyCode::Up | KeyCode::Char('k') => app.scroll_up(),
+            KeyCode::Down | KeyCode::Char('j') => app.scroll_down(),
+            KeyCode::PageUp => {
+                app.scroll_offset = app.scroll_offset.saturating_add(20);
+                app.auto_scroll = false;
+            }
+            KeyCode::PageDown => {
+                app.scroll_offset = app.scroll_offset.saturating_sub(20);
+                if app.scroll_offset == 0 {
+                    app.auto_scroll = true;
+                }
             }
             KeyCode::Char(c) => {
                 app.input.push(c);
             }
             KeyCode::Backspace => {
                 app.input.pop();
-            }
-            KeyCode::Up => {
-                app.scroll_up();
-            }
-            KeyCode::Down => {
-                app.scroll_down();
-            }
-            KeyCode::PageUp => {
-                app.scroll_offset = app.scroll_offset.saturating_add(20);
-            }
-            KeyCode::PageDown => {
-                app.scroll_offset = app.scroll_offset.saturating_sub(20);
             }
             _ => {}
         }
@@ -343,7 +426,7 @@ fn handle_slash_command(
         }
         "/help" | "/h" => {
             app.add_message(
-                "system",
+                MessageRole::System,
                 "\
 Available commands:
   /sessions, /ls          List saved sessions
@@ -356,13 +439,13 @@ Available commands:
         }
         "/sessions" | "/ls" => {
             let Some(sm) = session_manager else {
-                app.add_message("error", "Session manager not available.");
+                app.add_message(MessageRole::Error, "Session manager not available.");
                 return CommandResult::Continue;
             };
             match sm.list() {
                 Ok(sessions) => {
                     if sessions.is_empty() {
-                        app.add_message("system", "No saved sessions.");
+                        app.add_message(MessageRole::System, "No saved sessions.");
                     } else {
                         let mut out = String::from("Saved sessions:\n");
                         for s in &sessions {
@@ -371,21 +454,21 @@ Available commands:
                             let updated = s.updated_at.get(..19).unwrap_or(&s.updated_at);
                             out.push_str(&format!("  {id:<32}  {entries} entries  {updated}\n"));
                         }
-                        app.add_message("system", &out);
+                        app.add_message(MessageRole::System, &out);
                     }
                 }
                 Err(e) => {
-                    app.add_message("error", &format!("Failed to list sessions: {e}"));
+                    app.add_message(MessageRole::Error, &format!("Failed to list sessions: {e}"));
                 }
             }
         }
         "/show" => {
             let Some(session_id) = arg else {
-                app.add_message("error", "Usage: /show <session-id>");
+                app.add_message(MessageRole::Error, "Usage: /show <session-id>");
                 return CommandResult::Continue;
             };
             let Some(sm) = session_manager else {
-                app.add_message("error", "Session manager not available.");
+                app.add_message(MessageRole::Error, "Session manager not available.");
                 return CommandResult::Continue;
             };
             match sm.load(session_id) {
@@ -403,35 +486,36 @@ Available commands:
                         };
                         out.push_str(&format!("[{}]\n{}\n\n", prefix, entry.content));
                     }
-                    app.add_message("system", &out);
+                    app.add_message(MessageRole::System, &out);
                 }
                 Ok(None) => {
-                    app.add_message("error", &format!("Session not found: {session_id}"));
+                    app.add_message(
+                        MessageRole::Error,
+                        &format!("Session not found: {session_id}"),
+                    );
                 }
                 Err(e) => {
-                    app.add_message("error", &format!("Failed to load session: {e}"));
+                    app.add_message(MessageRole::Error, &format!("Failed to load session: {e}"));
                 }
             }
         }
         "/load" => {
             let Some(session_id) = arg else {
-                app.add_message("error", "Usage: /load <session-id>");
+                app.add_message(MessageRole::Error, "Usage: /load <session-id>");
                 return CommandResult::Continue;
             };
             let Some(sm) = session_manager else {
-                app.add_message("error", "Session manager not available.");
+                app.add_message(MessageRole::Error, "Session manager not available.");
                 return CommandResult::Continue;
             };
-            // Save current session first
             if let Some(ref sd) = session_data {
                 let _ = sm.save(sd);
             }
             match sm.load(session_id) {
                 Ok(Some(data)) => {
-                    // Clear current messages and replay loaded session
                     app.messages.clear();
                     app.add_message(
-                        "system",
+                        MessageRole::System,
                         &format!(
                             "Loaded session: {} ({} entries)",
                             data.session_id,
@@ -439,54 +523,68 @@ Available commands:
                         ),
                     );
                     for entry in &data.entries {
-                        let role = entry.role.as_str();
+                        let role = match entry.role.as_str() {
+                            "user" => MessageRole::User,
+                            "assistant" => MessageRole::Assistant,
+                            _ => MessageRole::System,
+                        };
                         app.add_message(role, &entry.content);
                     }
-                    // Update session data in place
                     if let Some(sd) = session_data {
                         *sd = data;
                     }
                 }
                 Ok(None) => {
-                    app.add_message("error", &format!("Session not found: {session_id}"));
+                    app.add_message(
+                        MessageRole::Error,
+                        &format!("Session not found: {session_id}"),
+                    );
                 }
                 Err(e) => {
-                    app.add_message("error", &format!("Failed to load session: {e}"));
+                    app.add_message(MessageRole::Error, &format!("Failed to load session: {e}"));
                 }
             }
         }
         "/delete" => {
             let Some(session_id) = arg else {
-                app.add_message("error", "Usage: /delete <session-id>");
+                app.add_message(MessageRole::Error, "Usage: /delete <session-id>");
                 return CommandResult::Continue;
             };
             let Some(sm) = session_manager else {
-                app.add_message("error", "Session manager not available.");
+                app.add_message(MessageRole::Error, "Session manager not available.");
                 return CommandResult::Continue;
             };
-            // Don't allow deleting the current session
             if let Some(sd) = session_data
                 && sd.session_id == session_id
             {
-                app.add_message("error", "Cannot delete the current session.");
+                app.add_message(MessageRole::Error, "Cannot delete the current session.");
                 return CommandResult::Continue;
             }
             match sm.load(session_id) {
                 Ok(Some(_)) => {
                     let _ = sm.delete(session_id);
-                    app.add_message("system", &format!("Deleted session: {session_id}"));
+                    app.add_message(
+                        MessageRole::System,
+                        &format!("Deleted session: {session_id}"),
+                    );
                 }
                 Ok(None) => {
-                    app.add_message("error", &format!("Session not found: {session_id}"));
+                    app.add_message(
+                        MessageRole::Error,
+                        &format!("Session not found: {session_id}"),
+                    );
                 }
                 Err(e) => {
-                    app.add_message("error", &format!("Failed to delete session: {e}"));
+                    app.add_message(
+                        MessageRole::Error,
+                        &format!("Failed to delete session: {e}"),
+                    );
                 }
             }
         }
         _ => {
             app.add_message(
-                "error",
+                MessageRole::Error,
                 &format!("Unknown command: {cmd}\nType /help for available commands."),
             );
         }

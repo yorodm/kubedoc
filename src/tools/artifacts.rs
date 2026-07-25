@@ -237,9 +237,11 @@ fn kind_to_api_version(kind: &str) -> Result<&'static str, FileToolError> {
         "ValidatingAdmissionPolicy" | "ValidatingAdmissionPolicyBinding" => {
             "admissionregistration.k8s.io/v1"
         }
-        _ => return Err(FileToolError::Other(format!(
-            "Unknown resource kind: {kind}. Provide a valid Kubernetes resource kind."
-        ))),
+        _ => {
+            return Err(FileToolError::Other(format!(
+                "Unknown resource kind: {kind}. Provide a valid Kubernetes resource kind."
+            )));
+        }
     };
     Ok(v)
 }

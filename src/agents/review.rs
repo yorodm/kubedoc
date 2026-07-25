@@ -3,6 +3,9 @@ use rig_core::{
     completion::CompletionModel,
     tool::server::ToolServerHandle,
 };
+use tokio::sync::mpsc;
+
+use crate::tui::progress::{ProgressEvent, ProgressHook};
 
 const REVIEW_PREAMBLE: &str = r#"
 You are a Kubernetes performance analyst. You have MCP tools available for
@@ -46,14 +49,19 @@ Be concise and data-driven. Query metrics proactively when relevant.
 pub fn build<M: CompletionModel + 'static>(
     model: M,
     tool_handle: ToolServerHandle,
+    progress_tx: Option<mpsc::UnboundedSender<ProgressEvent>>,
 ) -> anyhow::Result<Agent<M>> {
-    let agent = AgentBuilder::new(model)
+    let mut builder = AgentBuilder::new(model)
         .name("review")
         .description("Analyze cluster performance, identify bottlenecks, and recommend improvements. Use this for performance-related questions.")
         .preamble(REVIEW_PREAMBLE)
         .temperature(0.0)
         .tool_server_handle(tool_handle)
-        .default_max_turns(10)
-        .build();
-    Ok(agent)
+        .default_max_turns(10);
+
+    if let Some(tx) = progress_tx {
+        builder = builder.add_hook(ProgressHook::new(tx));
+    }
+
+    Ok(builder.build())
 }

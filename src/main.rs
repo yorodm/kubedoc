@@ -35,10 +35,7 @@ impl RunContext {
         let conversation_id = session_data.session_id.clone();
         let memory = Arc::new(InMemoryConversationMemory::new());
         let home_str = home.to_string_lossy();
-        let audit_log = Arc::new(audit::AuditLog::new(
-            &conversation_id,
-            Some(&home_str),
-        )?);
+        let audit_log = Arc::new(audit::AuditLog::new(&conversation_id, Some(&home_str))?);
         Ok(Self {
             session_manager,
             session_data,
@@ -55,6 +52,7 @@ async fn run_interactive_tui<M: CompletionModel + 'static>(
     kube_client: kube::Client,
     ctx: &mut RunContext,
 ) -> anyhow::Result<()> {
+    let (progress_tx, progress_rx) = tokio::sync::mpsc::unbounded_channel();
     let coordinator = agents::coordinator::Coordinator::new(
         kube_client,
         model,
@@ -62,6 +60,7 @@ async fn run_interactive_tui<M: CompletionModel + 'static>(
         Some(ctx.audit_log.clone()),
         Some(ctx.memory.clone() as Arc<dyn rig_core::memory::ConversationMemory>),
         Some(ctx.conversation_id.clone()),
+        Some(progress_tx),
     )
     .await?;
     tui::run(
@@ -70,6 +69,7 @@ async fn run_interactive_tui<M: CompletionModel + 'static>(
         Some(&ctx.session_manager),
         Some(ctx.session_data.clone()),
         Some(ctx.audit_log.clone()),
+        progress_rx,
     )
     .await
 }
@@ -199,10 +199,7 @@ api_key_env = "OPENAI_API_KEY"   # env var holding the API key
     Ok(())
 }
 
-async fn handle_mcp(
-    transport: &str,
-    config: &config::KubedocConfig,
-) -> anyhow::Result<()> {
+async fn handle_mcp(transport: &str, config: &config::KubedocConfig) -> anyhow::Result<()> {
     info!("Starting MCP server (transport={transport})");
 
     let kube_client = tools::kube_client::KubeClient::new(

@@ -203,7 +203,10 @@ impl KubedocMcpServer {
         let result = match name {
             "list_namespaces" => {
                 let api: Api<Namespace> = Api::all(self.client.clone());
-                let list = api.list(&ListParams::default().limit(500)).await.map_err(to_error)?;
+                let list = api
+                    .list(&ListParams::default().limit(500))
+                    .await
+                    .map_err(to_error)?;
                 let items: Vec<String> = list
                     .items
                     .iter()
@@ -225,7 +228,10 @@ impl KubedocMcpServer {
             }
             "get_nodes" => {
                 let api: Api<Node> = Api::all(self.client.clone());
-                let list = api.list(&ListParams::default().limit(500)).await.map_err(to_error)?;
+                let list = api
+                    .list(&ListParams::default().limit(500))
+                    .await
+                    .map_err(to_error)?;
                 let items: Vec<String> = list.items.iter().map(kube_client::node_summary).collect();
                 if items.is_empty() {
                     "No nodes found.".to_string()
@@ -239,7 +245,10 @@ impl KubedocMcpServer {
                     Some(ref ns) => Api::namespaced(self.client.clone(), ns),
                     None => Api::all(self.client.clone()),
                 };
-                let list = api.list(&ListParams::default().limit(500)).await.map_err(to_error)?;
+                let list = api
+                    .list(&ListParams::default().limit(500))
+                    .await
+                    .map_err(to_error)?;
                 let items: Vec<String> = list.items.iter().map(kube_client::pod_summary).collect();
                 if items.is_empty() {
                     "No pods found.".to_string()
@@ -253,7 +262,10 @@ impl KubedocMcpServer {
                     Some(ref ns) => Api::namespaced(self.client.clone(), ns),
                     None => Api::all(self.client.clone()),
                 };
-                let list = api.list(&ListParams::default().limit(500)).await.map_err(to_error)?;
+                let list = api
+                    .list(&ListParams::default().limit(500))
+                    .await
+                    .map_err(to_error)?;
                 let items: Vec<String> =
                     list.items.iter().map(kube_client::event_summary).collect();
                 if items.is_empty() {
@@ -268,7 +280,10 @@ impl KubedocMcpServer {
                     Some(ref ns) => Api::namespaced(self.client.clone(), ns),
                     None => Api::all(self.client.clone()),
                 };
-                let list = api.list(&ListParams::default().limit(500)).await.map_err(to_error)?;
+                let list = api
+                    .list(&ListParams::default().limit(500))
+                    .await
+                    .map_err(to_error)?;
                 let items: Vec<String> = list
                     .items
                     .iter()
@@ -286,7 +301,10 @@ impl KubedocMcpServer {
                     Some(ref ns) => Api::namespaced(self.client.clone(), ns),
                     None => Api::all(self.client.clone()),
                 };
-                let list = api.list(&ListParams::default().limit(500)).await.map_err(to_error)?;
+                let list = api
+                    .list(&ListParams::default().limit(500))
+                    .await
+                    .map_err(to_error)?;
                 let items: Vec<String> = list
                     .items
                     .iter()
@@ -304,7 +322,10 @@ impl KubedocMcpServer {
                     Some(ref ns) => Api::namespaced(self.client.clone(), ns),
                     None => Api::all(self.client.clone()),
                 };
-                let list = api.list(&ListParams::default().limit(500)).await.map_err(to_error)?;
+                let list = api
+                    .list(&ListParams::default().limit(500))
+                    .await
+                    .map_err(to_error)?;
                 let items: Vec<String> = list
                     .items
                     .iter()

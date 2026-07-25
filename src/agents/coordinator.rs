@@ -6,6 +6,9 @@ use rig_core::{
     completion::{CompletionModel, Prompt},
     tool::server::ToolServer,
 };
+use tokio::sync::mpsc;
+
+use crate::tui::progress::{ProgressEvent, ProgressHook};
 
 const COORDINATOR_PREAMBLE: &str = r#"
 You are kubedoc, a Kubernetes cluster assistant coordinating specialist agents.
@@ -57,17 +60,19 @@ impl<M: CompletionModel + 'static> Coordinator<M> {
         audit_log: Option<Arc<crate::audit::AuditLog>>,
         memory: Option<Arc<dyn rig_core::memory::ConversationMemory>>,
         conversation_id: Option<String>,
+        progress_tx: Option<mpsc::UnboundedSender<ProgressEvent>>,
     ) -> anyhow::Result<Self> {
-        // Sub-agents have their own internal tool servers (K8s tools for diagnose,
-        // file tools for artifacts, etc.) — they do NOT share the coordinator's handle.
-        let diagnose = crate::agents::diagnose::build(client.clone(), model.clone())?;
-        let artifacts = crate::agents::artifacts::build(client.clone(), model.clone())?;
+        let diagnose =
+            crate::agents::diagnose::build(client.clone(), model.clone(), progress_tx.clone())?;
+        let artifacts =
+            crate::agents::artifacts::build(client.clone(), model.clone(), progress_tx.clone())?;
 
         // Coordinator's tool server: sub-agents + MCP tools
         let tool_handle = ToolServer::new().run();
 
         // Build review with a clone of the handle so it can access MCP tools (Prometheus)
-        let review = crate::agents::review::build(model.clone(), tool_handle.clone())?;
+        let review =
+            crate::agents::review::build(model.clone(), tool_handle.clone(), progress_tx.clone())?;
 
         tool_handle.add_tool(diagnose).await?;
         tool_handle.add_tool(review).await?;
@@ -85,6 +90,10 @@ impl<M: CompletionModel + 'static> Coordinator<M> {
 
         if let Some(log) = audit_log {
             agent_builder = agent_builder.add_hook(crate::audit::AuditHook::new(log));
+        }
+
+        if let Some(tx) = progress_tx {
+            agent_builder = agent_builder.add_hook(ProgressHook::new(tx));
         }
 
         let mut agent = agent_builder.build();

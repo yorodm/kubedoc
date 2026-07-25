@@ -3,8 +3,10 @@ use rig_core::{
     agent::{Agent, AgentBuilder},
     completion::CompletionModel,
 };
+use tokio::sync::mpsc;
 
 use crate::tools::kube_client;
+use crate::tui::progress::{ProgressEvent, ProgressHook};
 
 const DIAGNOSE_PREAMBLE: &str = r#"
 You are the primary data-gathering agent. You have direct access to the Kubernetes
@@ -29,8 +31,12 @@ Provide a structured diagnosis with sections for:
 Be thorough but concise. If you find no issues, state that clearly.
 "#;
 
-pub fn build<M: CompletionModel + 'static>(client: Client, model: M) -> anyhow::Result<Agent<M>> {
-    let agent = AgentBuilder::new(model)
+pub fn build<M: CompletionModel + 'static>(
+    client: Client,
+    model: M,
+    progress_tx: Option<mpsc::UnboundedSender<ProgressEvent>>,
+) -> anyhow::Result<Agent<M>> {
+    let mut builder = AgentBuilder::new(model)
         .name("diagnose")
         .description("Inspect the cluster for issues, misconfigurations, and unhealthy resources. Use this for in-depth cluster health diagnosis.")
         .preamble(DIAGNOSE_PREAMBLE)
@@ -43,7 +49,11 @@ pub fn build<M: CompletionModel + 'static>(client: Client, model: M) -> anyhow::
         .tool(kube_client::GetConfigMaps { client: client.clone() })
         .tool(kube_client::GetNodeDetails { client: client.clone() })
         .tool(kube_client::GetPodLogs { client })
-        .default_max_turns(50)
-        .build();
-    Ok(agent)
+        .default_max_turns(50);
+
+    if let Some(tx) = progress_tx {
+        builder = builder.add_hook(ProgressHook::new(tx));
+    }
+
+    Ok(builder.build())
 }

@@ -68,8 +68,13 @@ impl SessionManager {
     }
 
     pub fn load(&self, session_id: &str) -> anyhow::Result<Option<SessionData>> {
-        if !session_id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.') {
-            anyhow::bail!("Invalid session ID: must only contain alphanumeric characters, hyphens, underscores, or dots");
+        if !session_id
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.')
+        {
+            anyhow::bail!(
+                "Invalid session ID: must only contain alphanumeric characters, hyphens, underscores, or dots"
+            );
         }
         let path = self.session_path(session_id);
         if !path.exists() {
@@ -101,8 +106,13 @@ impl SessionManager {
     }
 
     pub fn delete(&self, session_id: &str) -> anyhow::Result<()> {
-        if !session_id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.') {
-            anyhow::bail!("Invalid session ID: must only contain alphanumeric characters, hyphens, underscores, or dots");
+        if !session_id
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.')
+        {
+            anyhow::bail!(
+                "Invalid session ID: must only contain alphanumeric characters, hyphens, underscores, or dots"
+            );
         }
         let path = self.session_path(session_id);
         if path.exists() {
