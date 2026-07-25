@@ -19,9 +19,13 @@ pub struct AuditEntry {
     pub timestamp: String,
     pub session_id: String,
     pub event_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub args: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub result_summary: Option<String>,
     pub tokens: Option<u64>,
 }

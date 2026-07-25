@@ -3,7 +3,9 @@ use std::sync::Arc;
 use kube::Client;
 use rig_core::{
     agent::AgentBuilder,
-    completion::{CompletionModel, Prompt},
+    completion::{CompletionModel, Message, Prompt},
+    memory::ConversationMemory,
+    one_or_many::OneOrMany,
     tool::server::ToolServer,
 };
 use tokio::sync::mpsc;
@@ -30,9 +32,8 @@ Agent capabilities:
 
 PROTOCOL for multi-step tasks:
 1. Call diagnose first to gather cluster state data.
-2. Call review next for performance analysis or recommendations (it can query
-   Prometheus metrics directly via its own tools — no need to pre-fetch metrics).
-3. Call artifacts if the user wants to create or modify resources.
+2. If this is a diagnostics session, call review next for performance analysis or recommendations.
+3. If the user just want to generate artifacts, call artifacts if the user wants to create or modify resources.
 4. Always summarize the final result for the user.
 "#;
 
@@ -121,5 +122,43 @@ impl<M: CompletionModel + 'static> Coordinator<M> {
     pub async fn run(&self, prompt: &str) -> anyhow::Result<String> {
         let response = self.agent.prompt(prompt).await?;
         Ok(response)
+    }
+
+    pub async fn switch_session(
+        &mut self,
+        new_conversation_id: &str,
+        entries: &[crate::session::Entry],
+    ) -> anyhow::Result<()> {
+        let old_id = self
+            .agent
+            .default_conversation_id
+            .clone()
+            .unwrap_or_default();
+
+        if let Some(ref memory) = self.agent.memory {
+            memory.clear(&old_id).await?;
+        }
+
+        let mut messages = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let msg = match entry.role.as_str() {
+                "user" => Message::from(entry.content.clone()),
+                "assistant" => Message::Assistant {
+                    id: None,
+                    content: OneOrMany::one(rig_core::completion::AssistantContent::Text(
+                        entry.content.clone().into(),
+                    )),
+                },
+                _ => Message::from(entry.content.clone()),
+            };
+            messages.push(msg);
+        }
+
+        if let Some(ref memory) = self.agent.memory {
+            memory.append(new_conversation_id, messages).await?;
+        }
+
+        self.agent.default_conversation_id = Some(new_conversation_id.to_string());
+        Ok(())
     }
 }

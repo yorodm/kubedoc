@@ -27,6 +27,7 @@ enum MessageRole {
     System,
     Error,
     Step { agent: String },
+    StepResult { agent: String },
 }
 
 struct Message {
@@ -85,9 +86,14 @@ impl App {
                     agent,
                     tool_name,
                     result,
+                    duration_ms,
                 } => {
-                    let content = format!("[{agent}] {tool_name} returned: {result}");
-                    self.add_message(MessageRole::Step { agent }, &content);
+                    let content = if duration_ms > 0 {
+                        format!("[{agent}] {tool_name} returned: {result} ({duration_ms}ms)")
+                    } else {
+                        format!("[{agent}] {tool_name} returned: {result}")
+                    };
+                    self.add_message(MessageRole::StepResult { agent }, &content);
                 }
                 ProgressEvent::LlmTurn { agent, turn } => {
                     self.add_message(
@@ -97,15 +103,23 @@ impl App {
                         &format!("[{agent}] Thinking (turn {turn})..."),
                     );
                 }
-                ProgressEvent::ModelTurnFinished { agent, text } => {
+                ProgressEvent::ModelTurnFinished { agent, turn, text } => {
                     if !text.is_empty() {
                         self.add_message(
                             MessageRole::Step {
                                 agent: agent.clone(),
                             },
-                            &format!("[{agent}] {text}"),
+                            &format!("[{agent}] turn {turn}: {text}"),
                         );
                     }
+                }
+                ProgressEvent::AgentStart { name } => {
+                    self.add_message(
+                        MessageRole::Step {
+                            agent: name.clone(),
+                        },
+                        &format!("[{name}] Agent started"),
+                    );
                 }
             }
         }
@@ -145,6 +159,19 @@ impl App {
                     MessageRole::Step { agent } => {
                         let style = Style::default()
                             .fg(Color::DarkGray)
+                            .add_modifier(Modifier::ITALIC);
+                        return vec![
+                            Line::from(Span::styled(
+                                format!(" {agent}>"),
+                                style.add_modifier(Modifier::BOLD),
+                            )),
+                            Line::from(Span::styled(format!("   {}", msg.content), style)),
+                            Line::from(""),
+                        ];
+                    }
+                    MessageRole::StepResult { agent } => {
+                        let style = Style::default()
+                            .fg(Color::Gray)
                             .add_modifier(Modifier::ITALIC);
                         return vec![
                             Line::from(Span::styled(
@@ -227,7 +254,7 @@ impl App {
 type AgentFuture = Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>>>>;
 
 pub async fn run<M: CompletionModel + Clone + 'static>(
-    coordinator: Coordinator<M>,
+    mut coordinator: Coordinator<M>,
     session_id: &str,
     session_manager: Option<&crate::session::SessionManager>,
     mut session_data: Option<crate::session::SessionData>,
@@ -249,7 +276,7 @@ pub async fn run<M: CompletionModel + Clone + 'static>(
     let result = run_loop(
         &mut terminal,
         &mut app,
-        &coordinator,
+        &mut coordinator,
         session_manager,
         &mut session_data,
         audit_log.as_deref(),
@@ -272,7 +299,7 @@ pub async fn run<M: CompletionModel + Clone + 'static>(
 async fn run_loop<M: CompletionModel + Clone + 'static>(
     terminal: &mut DefaultTerminal,
     app: &mut App,
-    coordinator: &Coordinator<M>,
+    coordinator: &mut Coordinator<M>,
     session_manager: Option<&crate::session::SessionManager>,
     session_data: &mut Option<crate::session::SessionData>,
     audit_log: Option<&crate::audit::AuditLog>,
@@ -360,6 +387,36 @@ async fn run_loop<M: CompletionModel + Clone + 'static>(
                     {
                         CommandResult::Continue => {}
                         CommandResult::Exit => break,
+                        CommandResult::Load(data) => {
+                            app.messages.clear();
+                            app.add_message(
+                                MessageRole::System,
+                                &format!(
+                                    "Loaded session: {} ({} entries)",
+                                    data.session_id,
+                                    data.entries.len()
+                                ),
+                            );
+                            for entry in &data.entries {
+                                let role = match entry.role.as_str() {
+                                    "user" => MessageRole::User,
+                                    "assistant" => MessageRole::Assistant,
+                                    _ => MessageRole::System,
+                                };
+                                app.add_message(role, &entry.content);
+                            }
+                            let new_id = data.session_id.clone();
+                            if let Err(e) = coordinator.switch_session(&new_id, &data.entries).await
+                            {
+                                app.add_message(
+                                    MessageRole::Error,
+                                    &format!("Failed to restore session memory: {e}"),
+                                );
+                            }
+                            if let Some(sd) = session_data {
+                                *sd = data;
+                            }
+                        }
                     }
                     continue;
                 }
@@ -380,8 +437,8 @@ async fn run_loop<M: CompletionModel + Clone + 'static>(
                 let coord = coordinator.clone();
                 agent_fut = Some(Box::pin(async move { coord.run(&prompt).await }));
             }
-            KeyCode::Up | KeyCode::Char('k') => app.scroll_up(),
-            KeyCode::Down | KeyCode::Char('j') => app.scroll_down(),
+            KeyCode::Up => app.scroll_up(),
+            KeyCode::Down => app.scroll_down(),
             KeyCode::PageUp => {
                 app.scroll_offset = app.scroll_offset.saturating_add(20);
                 app.auto_scroll = false;
@@ -408,6 +465,7 @@ async fn run_loop<M: CompletionModel + Clone + 'static>(
 enum CommandResult {
     Continue,
     Exit,
+    Load(crate::session::SessionData),
 }
 
 fn handle_slash_command(
@@ -513,26 +571,7 @@ Available commands:
             }
             match sm.load(session_id) {
                 Ok(Some(data)) => {
-                    app.messages.clear();
-                    app.add_message(
-                        MessageRole::System,
-                        &format!(
-                            "Loaded session: {} ({} entries)",
-                            data.session_id,
-                            data.entries.len()
-                        ),
-                    );
-                    for entry in &data.entries {
-                        let role = match entry.role.as_str() {
-                            "user" => MessageRole::User,
-                            "assistant" => MessageRole::Assistant,
-                            _ => MessageRole::System,
-                        };
-                        app.add_message(role, &entry.content);
-                    }
-                    if let Some(sd) = session_data {
-                        *sd = data;
-                    }
+                    return CommandResult::Load(data);
                 }
                 Ok(None) => {
                     app.add_message(

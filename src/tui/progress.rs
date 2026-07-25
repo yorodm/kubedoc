@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 
 /// Events sent from agent hooks to the TUI during execution.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum ProgressEvent {
     ToolCall {
         agent: String,
@@ -16,6 +17,7 @@ pub enum ProgressEvent {
         agent: String,
         tool_name: String,
         result: String,
+        duration_ms: u64,
     },
     LlmTurn {
         agent: String,
@@ -23,7 +25,11 @@ pub enum ProgressEvent {
     },
     ModelTurnFinished {
         agent: String,
+        turn: usize,
         text: String,
+    },
+    AgentStart {
+        name: String,
     },
 }
 
@@ -73,12 +79,13 @@ impl<M: CompletionModel + 'static> AgentHook<M> for ProgressHook {
                     agent,
                     tool_name: tool_name.to_string(),
                     result: result.chars().take(200).collect(),
+                    duration_ms: 0,
                 });
             }
             StepEvent::CompletionCall { turn, .. } => {
                 let _ = tx.send(ProgressEvent::LlmTurn { agent, turn });
             }
-            StepEvent::ModelTurnFinished { content, .. } => {
+            StepEvent::ModelTurnFinished { turn, content, .. } => {
                 let text: String = content
                     .iter()
                     .filter_map(|c| match c {
@@ -89,6 +96,7 @@ impl<M: CompletionModel + 'static> AgentHook<M> for ProgressHook {
                     .join(" ");
                 let _ = tx.send(ProgressEvent::ModelTurnFinished {
                     agent,
+                    turn,
                     text: text.chars().take(300).collect(),
                 });
             }
