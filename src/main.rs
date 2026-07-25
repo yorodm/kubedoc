@@ -329,7 +329,15 @@ async fn main() -> anyhow::Result<()> {
         .expect("Failed to install rustls crypto provider");
 
     let cli = Cli::parse();
-    trace::init(cli.verbose);
+
+    // Non-interactive commands log to stderr; interactive mode logs to a file
+    // to avoid polluting the TUI.
+    if cli.command.is_some() {
+        trace::init(cli.verbose);
+    } else {
+        let log_path = kubedoc_home(cli.data_dir.as_deref()).join("kubedoc.log");
+        trace::init_to_file(cli.verbose, &log_path)?;
+    }
 
     let config = config::KubedocConfig::load(cli.config.as_deref(), &cli)
         .context("Failed to load configuration")?;
