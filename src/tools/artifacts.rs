@@ -1,5 +1,5 @@
-use kube::discovery::Scope;
 use kube::Client;
+use kube::discovery::Scope;
 use rig_core::tool::Tool;
 use serde::Deserialize;
 use serde_json::json;
@@ -57,7 +57,11 @@ impl Tool for WriteArtifact {
             }
         }
         std::fs::write(path, &args.content)?;
-        Ok(format!("Written {} bytes to {}", args.content.len(), args.path))
+        Ok(format!(
+            "Written {} bytes to {}",
+            args.content.len(),
+            args.path
+        ))
     }
 }
 
@@ -139,7 +143,12 @@ impl Tool for ListArtifacts {
         if paths.is_empty() {
             Ok("No files found matching pattern.".to_string())
         } else {
-            Ok(format!("Files matching '{}' ({}):\n{}", args.pattern, paths.len(), paths.join("\n")))
+            Ok(format!(
+                "Files matching '{}' ({}):\n{}",
+                args.pattern,
+                paths.len(),
+                paths.join("\n")
+            ))
         }
     }
 }
@@ -156,28 +165,50 @@ pub struct GenerateManifestArgs {
 
 fn kind_to_api_version(kind: &str) -> &str {
     match kind {
-        "Pod" | "Service" | "ConfigMap" | "Secret" | "Endpoints" | "LimitRange"
-        | "ResourceQuota" | "ReplicationController" | "ServiceAccount"
-        | "Event" | "Namespace" | "Node" | "PersistentVolume" | "PersistentVolumeClaim"
+        "Pod"
+        | "Service"
+        | "ConfigMap"
+        | "Secret"
+        | "Endpoints"
+        | "LimitRange"
+        | "ResourceQuota"
+        | "ReplicationController"
+        | "ServiceAccount"
+        | "Event"
+        | "Namespace"
+        | "Node"
+        | "PersistentVolume"
+        | "PersistentVolumeClaim"
         | "ComponentStatus" => "v1",
-        "Deployment" | "StatefulSet" | "DaemonSet" | "ReplicaSet" | "ControllerRevision" => "apps/v1",
+        "Deployment" | "StatefulSet" | "DaemonSet" | "ReplicaSet" | "ControllerRevision" => {
+            "apps/v1"
+        }
         "Ingress" | "IngressClass" | "NetworkPolicy" => "networking.k8s.io/v1",
         "Job" | "CronJob" => "batch/v1",
-        "Role" | "ClusterRole" | "RoleBinding" | "ClusterRoleBinding" => "rbac.authorization.k8s.io/v1",
+        "Role" | "ClusterRole" | "RoleBinding" | "ClusterRoleBinding" => {
+            "rbac.authorization.k8s.io/v1"
+        }
         "HorizontalPodAutoscaler" => "autoscaling/v2",
         "PodDisruptionBudget" | "Eviction" => "policy/v1",
         "CustomResourceDefinition" => "apiextensions.k8s.io/v1",
-        "MutatingWebhookConfiguration" | "ValidatingWebhookConfiguration" => "admissionregistration.k8s.io/v1",
+        "MutatingWebhookConfiguration" | "ValidatingWebhookConfiguration" => {
+            "admissionregistration.k8s.io/v1"
+        }
         "APIService" => "apiregistration.k8s.io/v1",
         "PriorityClass" | "RuntimeClass" => "scheduling.k8s.io/v1",
         "CSIDriver" | "CSINode" | "StorageClass" | "VolumeAttachment" => "storage.k8s.io/v1",
-        "SelfSubjectReview" | "TokenReview" | "SubjectAccessReview"
-        | "SelfSubjectAccessReview" | "SelfSubjectRulesReview"
+        "SelfSubjectReview"
+        | "TokenReview"
+        | "SubjectAccessReview"
+        | "SelfSubjectAccessReview"
+        | "SelfSubjectRulesReview"
         | "LocalSubjectAccessReview" => "authorization.k8s.io/v1",
         "CertificateSigningRequest" => "certificates.k8s.io/v1",
         "FlowSchema" | "PriorityLevelConfiguration" => "flowcontrol.apiserver.k8s.io/v1",
         "ClusterCIDR" | "IPAddress" => "networking.k8s.io/v1alpha1",
-        "ValidatingAdmissionPolicy" | "ValidatingAdmissionPolicyBinding" => "admissionregistration.k8s.io/v1",
+        "ValidatingAdmissionPolicy" | "ValidatingAdmissionPolicyBinding" => {
+            "admissionregistration.k8s.io/v1"
+        }
         _ => "v1",
     }
 }
@@ -336,8 +367,7 @@ impl Tool for ValidateManifest {
         }
 
         let valid = issues.is_empty();
-        Ok(serde_json::to_string_pretty(&ValidationResult { valid, issues })
-            .unwrap_or_default())
+        Ok(serde_json::to_string_pretty(&ValidationResult { valid, issues }).unwrap_or_default())
     }
 }
 
@@ -379,7 +409,11 @@ impl Tool for ListAvailableApiResources {
             let group_name = group.name();
             for version in group.versions() {
                 for (resource, caps) in group.versioned_resources(version) {
-                    let namespaced = if caps.scope == Scope::Namespaced { "namespaced" } else { "cluster" };
+                    let namespaced = if caps.scope == Scope::Namespaced {
+                        "namespaced"
+                    } else {
+                        "cluster"
+                    };
                     lines.push(format!(
                         "{}.{}/{} ({})",
                         resource.kind, group_name, version, namespaced
@@ -411,10 +445,19 @@ mod tests {
         assert_eq!(super::kind_to_api_version("Service"), "v1");
         assert_eq!(super::kind_to_api_version("Deployment"), "apps/v1");
         assert_eq!(super::kind_to_api_version("StatefulSet"), "apps/v1");
-        assert_eq!(super::kind_to_api_version("Ingress"), "networking.k8s.io/v1");
+        assert_eq!(
+            super::kind_to_api_version("Ingress"),
+            "networking.k8s.io/v1"
+        );
         assert_eq!(super::kind_to_api_version("Job"), "batch/v1");
-        assert_eq!(super::kind_to_api_version("Role"), "rbac.authorization.k8s.io/v1");
-        assert_eq!(super::kind_to_api_version("CustomResourceDefinition"), "apiextensions.k8s.io/v1");
+        assert_eq!(
+            super::kind_to_api_version("Role"),
+            "rbac.authorization.k8s.io/v1"
+        );
+        assert_eq!(
+            super::kind_to_api_version("CustomResourceDefinition"),
+            "apiextensions.k8s.io/v1"
+        );
         assert_eq!(super::kind_to_api_version("UnknownKind"), "v1");
     }
 

@@ -34,6 +34,7 @@ impl SessionManager {
         Ok(Self { sessions_dir: dir })
     }
 
+    #[cfg(test)]
     pub fn with_dir(sessions_dir: PathBuf) -> Self {
         Self { sessions_dir }
     }
@@ -67,7 +68,10 @@ impl SessionManager {
         Ok(sessions)
     }
 
-    pub fn load(&self, session_id: &str) -> Result<Option<SessionData>, Box<dyn std::error::Error>> {
+    pub fn load(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<SessionData>, Box<dyn std::error::Error>> {
         let path = self.session_path(session_id);
         if !path.exists() {
             return Ok(None);
@@ -83,7 +87,12 @@ impl SessionManager {
         Ok(())
     }
 
-    pub fn add_entry(&self, data: &mut SessionData, role: &str, content: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn add_entry(
+        &self,
+        data: &mut SessionData,
+        role: &str,
+        content: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         data.entries.push(Entry {
             role: role.to_string(),
             content: content.to_string(),
@@ -152,7 +161,9 @@ mod tests {
         let manager = SessionManager::with_dir(dir.clone());
 
         let mut session = manager.create();
-        manager.add_entry(&mut session, "assistant", "hi there").unwrap();
+        manager
+            .add_entry(&mut session, "assistant", "hi there")
+            .unwrap();
 
         assert_eq!(session.entries.len(), 1);
         assert!(session.updated_at > session.created_at);

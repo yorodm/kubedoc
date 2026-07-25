@@ -1,4 +1,4 @@
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt};
 
 pub fn init(verbose: u8) {
     let filter = match verbose {
@@ -7,8 +7,5 @@ pub fn init(verbose: u8) {
         _ => EnvFilter::new("trace"),
     };
 
-    fmt()
-        .with_env_filter(filter)
-        .with_target(false)
-        .init();
+    fmt().with_env_filter(filter).with_target(false).init();
 }

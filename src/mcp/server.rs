@@ -1,7 +1,7 @@
-use kube::api::{Api, ListParams, LogParams};
-use kube::Client;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{ConfigMap, Event, Namespace, Node, Pod, Service};
+use kube::Client;
+use kube::api::{Api, ListParams, LogParams};
 use rmcp::model::{
     CallToolRequestMethod, CallToolRequestParams, CallToolResult, Content, ErrorCode,
     InitializeResult, ListToolsResult, PaginatedRequestParams, RawContent, ServerCapabilities,
@@ -34,115 +34,163 @@ impl KubedocMcpServer {
         }
 
         vec![
-            tool("list_namespaces", "List all namespaces in the cluster", serde_json::json!({"type": "object", "properties": {}})),
-            tool("get_nodes", "List all nodes in the cluster with their status and capacity", serde_json::json!({"type": "object", "properties": {}})),
-            tool("get_pods", "List pods. Optionally filter by namespace (omit for all namespaces).", serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "namespace": {
-                        "type": "string",
-                        "description": "Namespace to filter pods by (omit for all namespaces)"
+            tool(
+                "list_namespaces",
+                "List all namespaces in the cluster",
+                serde_json::json!({"type": "object", "properties": {}}),
+            ),
+            tool(
+                "get_nodes",
+                "List all nodes in the cluster with their status and capacity",
+                serde_json::json!({"type": "object", "properties": {}}),
+            ),
+            tool(
+                "get_pods",
+                "List pods. Optionally filter by namespace (omit for all namespaces).",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "namespace": {
+                            "type": "string",
+                            "description": "Namespace to filter pods by (omit for all namespaces)"
+                        }
                     }
-                }
-            })),
-            tool("get_events", "List recent events. Optionally filter by namespace (omit for all namespaces).", serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "namespace": {
-                        "type": "string",
-                        "description": "Namespace to filter events by (omit for all namespaces)"
+                }),
+            ),
+            tool(
+                "get_events",
+                "List recent events. Optionally filter by namespace (omit for all namespaces).",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "namespace": {
+                            "type": "string",
+                            "description": "Namespace to filter events by (omit for all namespaces)"
+                        }
                     }
-                }
-            })),
-            tool("get_deployments", "List deployments. Optionally filter by namespace (omit for all namespaces).", serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "namespace": {
-                        "type": "string",
-                        "description": "Namespace to filter deployments by (omit for all namespaces)"
+                }),
+            ),
+            tool(
+                "get_deployments",
+                "List deployments. Optionally filter by namespace (omit for all namespaces).",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "namespace": {
+                            "type": "string",
+                            "description": "Namespace to filter deployments by (omit for all namespaces)"
+                        }
                     }
-                }
-            })),
-            tool("get_services", "List services. Optionally filter by namespace (omit for all namespaces).", serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "namespace": {
-                        "type": "string",
-                        "description": "Namespace to filter services by (omit for all namespaces)"
+                }),
+            ),
+            tool(
+                "get_services",
+                "List services. Optionally filter by namespace (omit for all namespaces).",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "namespace": {
+                            "type": "string",
+                            "description": "Namespace to filter services by (omit for all namespaces)"
+                        }
                     }
-                }
-            })),
-            tool("get_configmaps", "List configmaps. Optionally filter by namespace (omit for all namespaces).", serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "namespace": {
-                        "type": "string",
-                        "description": "Namespace to filter configmaps by (omit for all namespaces)"
+                }),
+            ),
+            tool(
+                "get_configmaps",
+                "List configmaps. Optionally filter by namespace (omit for all namespaces).",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "namespace": {
+                            "type": "string",
+                            "description": "Namespace to filter configmaps by (omit for all namespaces)"
+                        }
                     }
-                }
-            })),
-            tool("get_node_details", "Get detailed information about a specific node by name.", serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "The name of the node"
-                    }
-                },
-                "required": ["name"]
-            })),
-            tool("get_pod_logs", "Get recent logs from a pod. Optionally specify a container name.", serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "namespace": {
-                        "type": "string",
-                        "description": "The namespace of the pod"
+                }),
+            ),
+            tool(
+                "get_node_details",
+                "Get detailed information about a specific node by name.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "The name of the node"
+                        }
                     },
-                    "pod": {
-                        "type": "string",
-                        "description": "The name of the pod"
+                    "required": ["name"]
+                }),
+            ),
+            tool(
+                "get_pod_logs",
+                "Get recent logs from a pod. Optionally specify a container name.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "namespace": {
+                            "type": "string",
+                            "description": "The namespace of the pod"
+                        },
+                        "pod": {
+                            "type": "string",
+                            "description": "The name of the pod"
+                        },
+                        "container": {
+                            "type": "string",
+                            "description": "Optional container name within the pod"
+                        }
                     },
-                    "container": {
-                        "type": "string",
-                        "description": "Optional container name within the pod"
-                    }
-                },
-                "required": ["namespace", "pod"]
-            })),
-            tool("write_artifact", "Write content to a file in the current working directory.", serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Relative file path (e.g. 'manifests/nginx.yaml')"
+                    "required": ["namespace", "pod"]
+                }),
+            ),
+            tool(
+                "write_artifact",
+                "Write content to a file in the current working directory.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Relative file path (e.g. 'manifests/nginx.yaml')"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "File content to write"
+                        }
                     },
-                    "content": {
-                        "type": "string",
-                        "description": "File content to write"
-                    }
-                },
-                "required": ["path", "content"]
-            })),
-            tool("read_artifact", "Read the contents of a file in the current working directory.", serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Relative file path (e.g. 'manifests/nginx.yaml')"
-                    }
-                },
-                "required": ["path"]
-            })),
-            tool("list_artifacts", "List files in the current directory matching a glob pattern.", serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "pattern": {
-                        "type": "string",
-                        "description": "Glob pattern (e.g. '**/*.yaml', 'manifests/*.yml')"
-                    }
-                },
-                "required": ["pattern"]
-            })),
+                    "required": ["path", "content"]
+                }),
+            ),
+            tool(
+                "read_artifact",
+                "Read the contents of a file in the current working directory.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Relative file path (e.g. 'manifests/nginx.yaml')"
+                        }
+                    },
+                    "required": ["path"]
+                }),
+            ),
+            tool(
+                "list_artifacts",
+                "List files in the current directory matching a glob pattern.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "pattern": {
+                            "type": "string",
+                            "description": "Glob pattern (e.g. '**/*.yaml', 'manifests/*.yml')"
+                        }
+                    },
+                    "required": ["pattern"]
+                }),
+            ),
         ]
     }
 
@@ -177,7 +225,11 @@ impl KubedocMcpServer {
             "get_nodes" => {
                 let api: Api<Node> = Api::all(self.client.clone());
                 let list = api.list(&ListParams::default()).await.map_err(to_error)?;
-                let items: Vec<String> = list.items.iter().map(|n| kube_client::node_summary(n)).collect();
+                let items: Vec<String> = list
+                    .items
+                    .iter()
+                    .map(|n| kube_client::node_summary(n))
+                    .collect();
                 if items.is_empty() {
                     "No nodes found.".to_string()
                 } else {
@@ -191,7 +243,11 @@ impl KubedocMcpServer {
                     None => Api::all(self.client.clone()),
                 };
                 let list = api.list(&ListParams::default()).await.map_err(to_error)?;
-                let items: Vec<String> = list.items.iter().map(|p| kube_client::pod_summary(p)).collect();
+                let items: Vec<String> = list
+                    .items
+                    .iter()
+                    .map(|p| kube_client::pod_summary(p))
+                    .collect();
                 if items.is_empty() {
                     "No pods found.".to_string()
                 } else {
@@ -205,7 +261,11 @@ impl KubedocMcpServer {
                     None => Api::all(self.client.clone()),
                 };
                 let list = api.list(&ListParams::default()).await.map_err(to_error)?;
-                let items: Vec<String> = list.items.iter().map(|e| kube_client::event_summary(e)).collect();
+                let items: Vec<String> = list
+                    .items
+                    .iter()
+                    .map(|e| kube_client::event_summary(e))
+                    .collect();
                 if items.is_empty() {
                     "No events found.".to_string()
                 } else {
@@ -219,8 +279,11 @@ impl KubedocMcpServer {
                     None => Api::all(self.client.clone()),
                 };
                 let list = api.list(&ListParams::default()).await.map_err(to_error)?;
-                let items: Vec<String> =
-                    list.items.iter().map(|d| kube_client::deployment_summary(d)).collect();
+                let items: Vec<String> = list
+                    .items
+                    .iter()
+                    .map(|d| kube_client::deployment_summary(d))
+                    .collect();
                 if items.is_empty() {
                     "No deployments found.".to_string()
                 } else {
@@ -234,7 +297,11 @@ impl KubedocMcpServer {
                     None => Api::all(self.client.clone()),
                 };
                 let list = api.list(&ListParams::default()).await.map_err(to_error)?;
-                let items: Vec<String> = list.items.iter().map(|s| kube_client::service_summary(s)).collect();
+                let items: Vec<String> = list
+                    .items
+                    .iter()
+                    .map(|s| kube_client::service_summary(s))
+                    .collect();
                 if items.is_empty() {
                     "No services found.".to_string()
                 } else {
@@ -248,8 +315,11 @@ impl KubedocMcpServer {
                     None => Api::all(self.client.clone()),
                 };
                 let list = api.list(&ListParams::default()).await.map_err(to_error)?;
-                let items: Vec<String> =
-                    list.items.iter().map(|c| kube_client::configmap_summary(c)).collect();
+                let items: Vec<String> = list
+                    .items
+                    .iter()
+                    .map(|c| kube_client::configmap_summary(c))
+                    .collect();
                 if items.is_empty() {
                     "No configmaps found.".to_string()
                 } else {
@@ -350,18 +420,29 @@ impl KubedocMcpServer {
                         None,
                     )
                 })?;
-                let paths: Vec<String> = entries.filter_map(|e| e.ok()).map(|p| p.display().to_string()).collect();
+                let paths: Vec<String> = entries
+                    .filter_map(|e| e.ok())
+                    .map(|p| p.display().to_string())
+                    .collect();
                 if paths.is_empty() {
                     "No files found matching pattern.".to_string()
                 } else {
-                    format!("Files matching '{}' ({}):\n{}", pattern, paths.len(), paths.join("\n"))
+                    format!(
+                        "Files matching '{}' ({}):\n{}",
+                        pattern,
+                        paths.len(),
+                        paths.join("\n")
+                    )
                 }
             }
             _ => {
                 return Err(ErrorData::method_not_found::<CallToolRequestMethod>());
             }
         };
-        Ok(CallToolResult::success(vec![Content::new(RawContent::text(result), None)]))
+        Ok(CallToolResult::success(vec![Content::new(
+            RawContent::text(result),
+            None,
+        )]))
     }
 
     pub async fn run(self) -> Result<(), Box<dyn std::error::Error>> {
@@ -374,9 +455,8 @@ impl KubedocMcpServer {
 impl ServerHandler for KubedocMcpServer {
     fn get_info(&self) -> ServerInfo {
         let mut info = InitializeResult::new(ServerCapabilities::builder().enable_tools().build());
-        info.instructions = Some(
-            "Kubernetes cluster diagnostics and manifest generation tools.".to_string(),
-        );
+        info.instructions =
+            Some("Kubernetes cluster diagnostics and manifest generation tools.".to_string());
         info
     }
 
@@ -397,7 +477,8 @@ impl ServerHandler for KubedocMcpServer {
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.handle_tool_call(&request.name, request.arguments).await
+        self.handle_tool_call(&request.name, request.arguments)
+            .await
     }
 }
 

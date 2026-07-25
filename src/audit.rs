@@ -1,6 +1,6 @@
 use rig_core::agent::hook::{AgentHook, Flow, HookContext, StepEvent, StepEventKind};
-use rig_core::completion::message::AssistantContent;
 use rig_core::completion::CompletionModel;
+use rig_core::completion::message::AssistantContent;
 use rig_core::wasm_compat::WasmCompatSend;
 use serde::Serialize;
 use std::fs::OpenOptions;
@@ -27,7 +27,10 @@ pub struct AuditEntry {
 }
 
 impl AuditLog {
-    pub fn new(session_id: &str, data_dir: Option<&str>) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(
+        session_id: &str,
+        data_dir: Option<&str>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let dir = crate::config::kubedoc_home(data_dir).join("audit");
 
         std::fs::create_dir_all(&dir)?;
@@ -88,7 +91,14 @@ impl AuditLog {
         tool_name: &str,
         args: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        self.log_event("tool_call", Some(agent), Some(tool_name), Some(args), None, None)
+        self.log_event(
+            "tool_call",
+            Some(agent),
+            Some(tool_name),
+            Some(args),
+            None,
+            None,
+        )
     }
 
     pub fn tool_result(
@@ -97,11 +107,29 @@ impl AuditLog {
         tool_name: &str,
         result_summary: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        self.log_event("tool_result", Some(agent), Some(tool_name), None, Some(result_summary), None)
+        self.log_event(
+            "tool_result",
+            Some(agent),
+            Some(tool_name),
+            None,
+            Some(result_summary),
+            None,
+        )
     }
 
-    pub fn agent_response(&self, agent: &str, response: &str) -> Result<(), Box<dyn std::error::Error>> {
-        self.log_event("agent_response", Some(agent), None, None, Some(response), None)
+    pub fn agent_response(
+        &self,
+        agent: &str,
+        response: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.log_event(
+            "agent_response",
+            Some(agent),
+            None,
+            None,
+            Some(response),
+            None,
+        )
     }
 
     pub fn agent_thinking(&self, agent: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -123,9 +151,7 @@ impl<M: CompletionModel + 'static> AgentHook<M> for AuditHook {
     fn observes(&self, kind: StepEventKind) -> bool {
         matches!(
             kind,
-            StepEventKind::ToolCall
-                | StepEventKind::ToolResult
-                | StepEventKind::ModelTurnFinished
+            StepEventKind::ToolCall | StepEventKind::ToolResult | StepEventKind::ModelTurnFinished
         )
     }
 

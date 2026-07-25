@@ -1,12 +1,13 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
+    DefaultTerminal,
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Paragraph, Wrap},
-    DefaultTerminal,
 };
 
 use crate::agents::coordinator::Coordinator;
@@ -61,7 +62,7 @@ impl App {
         let input_area = chunks[2];
 
         let header = Span::styled(
-            " kubedoc — Interactive Session  |  Ctrl+D quit  |  Ctrl+L clear  |  ↑↓ scroll",
+            " kubedoc — Interactive Session  |  /help commands  |  Ctrl+D quit  |  Ctrl+L clear",
             Style::default()
                 .fg(Color::White)
                 .bg(Color::DarkGray)
@@ -102,7 +103,9 @@ impl App {
             })
             .collect();
 
-        let max_scroll = message_lines.len().saturating_sub(messages_area.height as usize);
+        let max_scroll = message_lines
+            .len()
+            .saturating_sub(messages_area.height as usize);
         let scroll = self.scroll_offset.min(max_scroll);
 
         let messages_widget = Paragraph::new(message_lines)
@@ -132,7 +135,7 @@ impl App {
             let cursor_x = input_area.x + 2 + self.input.len() as u16;
             let cursor_y = input_area.y + 1;
             if cursor_x < input_area.x + input_area.width.saturating_sub(1) {
-                frame.set_cursor(cursor_x, cursor_y);
+                frame.set_cursor_position((cursor_x, cursor_y));
             }
         }
     }
@@ -151,8 +154,13 @@ pub async fn run<M: CompletionModel + 'static>(
     session_id: &str,
     session_manager: Option<&crate::session::SessionManager>,
     mut session_data: Option<crate::session::SessionData>,
+    audit_log: Option<Arc<crate::audit::AuditLog>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal = ratatui::try_init()?;
+
+    if let Some(ref log) = audit_log {
+        let _ = log.session_start();
+    }
 
     let mut app = App::new();
     app.add_message(
@@ -160,7 +168,19 @@ pub async fn run<M: CompletionModel + 'static>(
         &format!("Session: {session_id} — type your Kubernetes questions below."),
     );
 
-    let result = run_loop(&mut terminal, &mut app, &coordinator, session_manager, &mut session_data).await;
+    let result = run_loop(
+        &mut terminal,
+        &mut app,
+        &coordinator,
+        session_manager,
+        &mut session_data,
+        audit_log.as_deref(),
+    )
+    .await;
+
+    if let Some(ref log) = audit_log {
+        let _ = log.session_end();
+    }
 
     if let (Some(sm), Some(sd)) = (session_manager, &session_data) {
         let _ = sm.save(sd);
@@ -176,6 +196,7 @@ async fn run_loop<M: CompletionModel + 'static>(
     coordinator: &Coordinator<M>,
     session_manager: Option<&crate::session::SessionManager>,
     session_data: &mut Option<crate::session::SessionData>,
+    audit_log: Option<&crate::audit::AuditLog>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     loop {
         terminal.draw(|frame| app.render(frame))?;
@@ -197,17 +218,35 @@ async fn run_loop<M: CompletionModel + 'static>(
                     app.messages.clear();
                 }
                 KeyCode::Enter if !app.input.is_empty() && !app.loading => {
-                    let prompt = std::mem::take(&mut app.input);
-                    app.add_message("user", &prompt);
+                    let input = std::mem::take(&mut app.input);
+
+                    if input.starts_with('/') {
+                        match handle_slash_command(
+                            &input,
+                            app,
+                            session_manager,
+                            session_data.as_mut(),
+                        ) {
+                            CommandResult::Continue => {}
+                            CommandResult::Exit => break,
+                        }
+                        continue;
+                    }
+
+                    app.add_message("user", &input);
+
+                    if let Some(log) = audit_log {
+                        let _ = log.user_prompt(&input);
+                    }
 
                     if let (Some(sm), Some(sd)) = (session_manager, session_data.as_mut()) {
-                        let _ = sm.add_entry(sd, "user", &prompt);
+                        let _ = sm.add_entry(sd, "user", &input);
                     }
 
                     app.loading = true;
                     terminal.draw(|frame| app.render(frame))?;
 
-                    match coordinator.run(&prompt).await {
+                    match coordinator.run(&input).await {
                         Ok(response) => {
                             app.add_message("assistant", &response);
                             if let (Some(sm), Some(sd)) = (session_manager, session_data.as_mut()) {
@@ -244,4 +283,177 @@ async fn run_loop<M: CompletionModel + 'static>(
     }
 
     Ok(())
+}
+
+enum CommandResult {
+    Continue,
+    Exit,
+}
+
+fn handle_slash_command(
+    input: &str,
+    app: &mut App,
+    session_manager: Option<&crate::session::SessionManager>,
+    session_data: Option<&mut crate::session::SessionData>,
+) -> CommandResult {
+    let parts: Vec<&str> = input.trim().splitn(2, ' ').collect();
+    let cmd = parts[0].to_lowercase();
+    let arg = parts.get(1).map(|s| s.trim());
+
+    match cmd.as_str() {
+        "/exit" | "/quit" | "/q" => {
+            return CommandResult::Exit;
+        }
+        "/help" | "/h" => {
+            app.add_message(
+                "system",
+                "\
+Available commands:
+  /sessions, /ls          List saved sessions
+  /show <session-id>      Show entries from a session
+  /load <session-id>      Load a previous session
+  /delete <session-id>    Delete a session
+  /exit, /quit, /q        Exit kubedoc
+  /help, /h               Show this help",
+            );
+        }
+        "/sessions" | "/ls" => {
+            let Some(sm) = session_manager else {
+                app.add_message("error", "Session manager not available.");
+                return CommandResult::Continue;
+            };
+            match sm.list() {
+                Ok(sessions) => {
+                    if sessions.is_empty() {
+                        app.add_message("system", "No saved sessions.");
+                    } else {
+                        let mut out = String::from("Saved sessions:\n");
+                        for s in &sessions {
+                            let id = &s.session_id;
+                            let entries = s.entries.len();
+                            let updated = &s.updated_at[..19.min(s.updated_at.len())];
+                            out.push_str(&format!("  {id:<32}  {entries} entries  {updated}\n"));
+                        }
+                        app.add_message("system", &out);
+                    }
+                }
+                Err(e) => {
+                    app.add_message("error", &format!("Failed to list sessions: {e}"));
+                }
+            }
+        }
+        "/show" => {
+            let Some(session_id) = arg else {
+                app.add_message("error", "Usage: /show <session-id>");
+                return CommandResult::Continue;
+            };
+            let Some(sm) = session_manager else {
+                app.add_message("error", "Session manager not available.");
+                return CommandResult::Continue;
+            };
+            match sm.load(session_id) {
+                Ok(Some(data)) => {
+                    let mut out = format!(
+                        "Session: {}  (created {})\n---\n",
+                        data.session_id,
+                        &data.created_at[..19.min(data.created_at.len())]
+                    );
+                    for entry in &data.entries {
+                        let prefix = match entry.role.as_str() {
+                            "user" => "You",
+                            "assistant" => "Agent",
+                            other => other,
+                        };
+                        out.push_str(&format!("[{}]\n{}\n\n", prefix, entry.content));
+                    }
+                    app.add_message("system", &out);
+                }
+                Ok(None) => {
+                    app.add_message("error", &format!("Session not found: {session_id}"));
+                }
+                Err(e) => {
+                    app.add_message("error", &format!("Failed to load session: {e}"));
+                }
+            }
+        }
+        "/load" => {
+            let Some(session_id) = arg else {
+                app.add_message("error", "Usage: /load <session-id>");
+                return CommandResult::Continue;
+            };
+            let Some(sm) = session_manager else {
+                app.add_message("error", "Session manager not available.");
+                return CommandResult::Continue;
+            };
+            // Save current session first
+            if let Some(ref sd) = session_data {
+                let _ = sm.save(sd);
+            }
+            match sm.load(session_id) {
+                Ok(Some(data)) => {
+                    // Clear current messages and replay loaded session
+                    app.messages.clear();
+                    app.add_message(
+                        "system",
+                        &format!(
+                            "Loaded session: {} ({} entries)",
+                            data.session_id,
+                            data.entries.len()
+                        ),
+                    );
+                    for entry in &data.entries {
+                        let role = entry.role.as_str();
+                        app.add_message(role, &entry.content);
+                    }
+                    // Update session data in place
+                    if let Some(sd) = session_data {
+                        *sd = data;
+                    }
+                }
+                Ok(None) => {
+                    app.add_message("error", &format!("Session not found: {session_id}"));
+                }
+                Err(e) => {
+                    app.add_message("error", &format!("Failed to load session: {e}"));
+                }
+            }
+        }
+        "/delete" => {
+            let Some(session_id) = arg else {
+                app.add_message("error", "Usage: /delete <session-id>");
+                return CommandResult::Continue;
+            };
+            let Some(sm) = session_manager else {
+                app.add_message("error", "Session manager not available.");
+                return CommandResult::Continue;
+            };
+            // Don't allow deleting the current session
+            if let Some(sd) = session_data {
+                if sd.session_id == session_id {
+                    app.add_message("error", "Cannot delete the current session.");
+                    return CommandResult::Continue;
+                }
+            }
+            match sm.load(session_id) {
+                Ok(Some(_)) => {
+                    let _ = sm.delete(session_id);
+                    app.add_message("system", &format!("Deleted session: {session_id}"));
+                }
+                Ok(None) => {
+                    app.add_message("error", &format!("Session not found: {session_id}"));
+                }
+                Err(e) => {
+                    app.add_message("error", &format!("Failed to delete session: {e}"));
+                }
+            }
+        }
+        _ => {
+            app.add_message(
+                "error",
+                &format!("Unknown command: {cmd}\nType /help for available commands."),
+            );
+        }
+    }
+
+    CommandResult::Continue
 }

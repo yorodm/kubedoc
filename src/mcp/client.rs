@@ -1,11 +1,8 @@
 use rig_core::tool::rmcp::McpClientHandler;
 use rig_core::tool::server::ToolServerHandle;
-use rmcp::model::ClientInfo;
-use rmcp::transport::{
-    TokioChildProcess,
-    streamable_http_client::StreamableHttpClientWorker,
-};
 use rmcp::ServiceError;
+use rmcp::model::ClientInfo;
+use rmcp::transport::{TokioChildProcess, streamable_http_client::StreamableHttpClientWorker};
 
 use crate::config::McpServerConfig;
 
@@ -49,8 +46,7 @@ pub async fn connect_and_register(
 
         let mut command = tokio::process::Command::new(program);
         command.args(&args);
-        let child = TokioChildProcess::new(command)
-            .map_err(McpClientError::SpawnProcess)?;
+        let child = TokioChildProcess::new(command).map_err(McpClientError::SpawnProcess)?;
 
         #[allow(deprecated)]
         let (reader, writer) = child.split();

@@ -12,19 +12,17 @@ mod tui;
 use std::sync::Arc;
 
 use clap::Parser;
-use cli::{Cli, Commands, ConfigAction};
+use cli::{Cli, Commands, ConfigAction, SessionsAction};
 use config::kubedoc_home;
 use kube::Client;
-use rig_core::{
-    completion::CompletionModel,
-    memory::InMemoryConversationMemory,
-};
+use rig_core::{completion::CompletionModel, memory::InMemoryConversationMemory};
 use tracing::info;
 
 async fn run_interactive_tui<M: CompletionModel + 'static>(
     model: M,
     kube_client: Client,
     mcp_servers: Vec<config::McpServerConfig>,
+    audit_log: Option<Arc<crate::audit::AuditLog>>,
     memory: &Arc<InMemoryConversationMemory>,
     conversation_id: &str,
     session_manager: &session::SessionManager,
@@ -34,12 +32,19 @@ async fn run_interactive_tui<M: CompletionModel + 'static>(
         kube_client,
         model,
         mcp_servers,
-        None,
+        audit_log.clone(),
         Some(memory.clone() as Arc<dyn rig_core::memory::ConversationMemory>),
         Some(conversation_id.to_string()),
     )
     .await?;
-    tui::run(coordinator, conversation_id, Some(session_manager), Some(session_data.clone())).await
+    tui::run(
+        coordinator,
+        conversation_id,
+        Some(session_manager),
+        Some(session_data.clone()),
+        audit_log,
+    )
+    .await
 }
 
 #[tokio::main]
@@ -173,6 +178,62 @@ api_key_env = "OPENAI_API_KEY"   # env var holding the API key
             }
         }
 
+        Some(Commands::Sessions { action }) => {
+            let session_manager =
+                session::SessionManager::new(Some(kubedoc_home(cli.data_dir.as_deref())))?;
+            match action {
+                SessionsAction::List => {
+                    let sessions = session_manager.list()?;
+                    if sessions.is_empty() {
+                        println!("No saved sessions.");
+                    } else {
+                        for s in &sessions {
+                            println!(
+                                "{id:<32}  {entries} entries  {updated}",
+                                id = s.session_id,
+                                entries = s.entries.len(),
+                                updated = &s.updated_at[..19],
+                            );
+                        }
+                    }
+                }
+                SessionsAction::Show { session_id } => match session_manager.load(&session_id)? {
+                    None => {
+                        eprintln!("Session not found: {}", session_id);
+                        std::process::exit(1);
+                    }
+                    Some(data) => {
+                        println!(
+                            "Session: {}  (created {})",
+                            data.session_id,
+                            &data.created_at[..19]
+                        );
+                        println!("---");
+                        for entry in &data.entries {
+                            let prefix = match entry.role.as_str() {
+                                "user" => "You",
+                                "assistant" => "Agent",
+                                other => other,
+                            };
+                            println!("[{}]\n{}\n", prefix, entry.content);
+                        }
+                    }
+                },
+                SessionsAction::Delete { session_id } => {
+                    match session_manager.load(&session_id)? {
+                        None => {
+                            eprintln!("Session not found: {}", session_id);
+                            std::process::exit(1);
+                        }
+                        Some(_) => {
+                            session_manager.delete(&session_id)?;
+                            println!("Deleted session: {}", session_id);
+                        }
+                    }
+                }
+            }
+        }
+
         None => {
             let kube_client = tools::kube_client::KubeClient::new(
                 config.kube.kubeconfig_path.as_deref(),
@@ -187,52 +248,69 @@ api_key_env = "OPENAI_API_KEY"   # env var holding the API key
                 .and_then(|m| m.servers.clone())
                 .unwrap_or_default();
 
-            let session_manager = session::SessionManager::new(Some(kubedoc_home(cli.data_dir.as_deref())))?;
+            let session_manager =
+                session::SessionManager::new(Some(kubedoc_home(cli.data_dir.as_deref())))?;
             let session_data = session_manager.create();
             let conversation_id = session_data.session_id.clone();
             let memory = Arc::new(InMemoryConversationMemory::new());
+            let audit_log = Arc::new(crate::audit::AuditLog::new(
+                &conversation_id,
+                Some(&kubedoc_home(cli.data_dir.as_deref()).to_string_lossy()),
+            )?);
 
             match config.llm.provider.as_str() {
-                "openai" => run_interactive_tui(
-                    providers::openai_completion(&config)?,
-                    kube_client.clone(),
-                    mcp_servers.clone(),
-                    &memory,
-                    &conversation_id,
-                    &session_manager,
-                    &session_data,
-                )
-                .await?,
-                "anthropic" => run_interactive_tui(
-                    providers::anthropic_completion(&config)?,
-                    kube_client.clone(),
-                    mcp_servers.clone(),
-                    &memory,
-                    &conversation_id,
-                    &session_manager,
-                    &session_data,
-                )
-                .await?,
-                "groq" => run_interactive_tui(
-                    providers::groq_completion(&config)?,
-                    kube_client.clone(),
-                    mcp_servers.clone(),
-                    &memory,
-                    &conversation_id,
-                    &session_manager,
-                    &session_data,
-                )
-                .await?,
-                "ollama" => run_interactive_tui(
-                    providers::ollama_completion(&config)?,
-                    kube_client.clone(),
-                    mcp_servers.clone(),
-                    &memory,
-                    &conversation_id,
-                    &session_manager,
-                    &session_data,
-                )
-                .await?,
+                "openai" => {
+                    run_interactive_tui(
+                        providers::openai_completion(&config)?,
+                        kube_client.clone(),
+                        mcp_servers.clone(),
+                        Some(audit_log.clone()),
+                        &memory,
+                        &conversation_id,
+                        &session_manager,
+                        &session_data,
+                    )
+                    .await?
+                }
+                "anthropic" => {
+                    run_interactive_tui(
+                        providers::anthropic_completion(&config)?,
+                        kube_client.clone(),
+                        mcp_servers.clone(),
+                        Some(audit_log.clone()),
+                        &memory,
+                        &conversation_id,
+                        &session_manager,
+                        &session_data,
+                    )
+                    .await?
+                }
+                "groq" => {
+                    run_interactive_tui(
+                        providers::groq_completion(&config)?,
+                        kube_client.clone(),
+                        mcp_servers.clone(),
+                        Some(audit_log.clone()),
+                        &memory,
+                        &conversation_id,
+                        &session_manager,
+                        &session_data,
+                    )
+                    .await?
+                }
+                "ollama" => {
+                    run_interactive_tui(
+                        providers::ollama_completion(&config)?,
+                        kube_client.clone(),
+                        mcp_servers.clone(),
+                        Some(audit_log.clone()),
+                        &memory,
+                        &conversation_id,
+                        &session_manager,
+                        &session_data,
+                    )
+                    .await?
+                }
                 other => return Err(format!("Unsupported provider: {other}").into()),
             }
         }

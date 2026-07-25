@@ -67,6 +67,28 @@ pub enum Commands {
         #[arg(long, default_value = "127.0.0.1:3000")]
         bind: String,
     },
+
+    /// Manage conversation sessions
+    Sessions {
+        #[command(subcommand)]
+        action: SessionsAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum SessionsAction {
+    /// List all saved sessions
+    List,
+    /// Show entries from a session
+    Show {
+        /// Session ID to display
+        session_id: String,
+    },
+    /// Delete a session
+    Delete {
+        /// Session ID to delete
+        session_id: String,
+    },
 }
 
 #[derive(Subcommand)]

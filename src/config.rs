@@ -3,13 +3,11 @@ use std::path::PathBuf;
 use serde::Deserialize;
 
 pub fn kubedoc_home(cli_override: Option<&str>) -> PathBuf {
-    cli_override
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".kubedoc")
-        })
+    cli_override.map(PathBuf::from).unwrap_or_else(|| {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".kubedoc")
+    })
 }
 
 #[derive(Debug, Deserialize, Default)]

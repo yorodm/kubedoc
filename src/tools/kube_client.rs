@@ -1,13 +1,11 @@
+use k8s_openapi::api::apps::v1::Deployment;
+use k8s_openapi::api::core::v1::{ConfigMap, Event, Namespace, Node, Pod, Service};
+use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use kube::api::{Api, ListParams, LogParams};
 use kube::{
     Client,
     config::{Config, KubeConfigOptions, Kubeconfig},
 };
-use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::{
-    ConfigMap, Event, Namespace, Node, Pod, Service,
-};
-use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use rig_core::tool::Tool;
 use serde::Deserialize;
 use serde_json::json;
@@ -94,15 +92,9 @@ pub fn pod_summary(pod: &Pod) -> String {
     let name = pod.metadata.name.as_deref().unwrap_or("unknown");
     let ns = pod.metadata.namespace.as_deref().unwrap_or("default");
     let status = pod.status.as_ref();
-    let phase = status
-        .and_then(|s| s.phase.as_deref())
-        .unwrap_or("Unknown");
-    let host_ip = status
-        .and_then(|s| s.host_ip.as_deref())
-        .unwrap_or("N/A");
-    let pod_ip = status
-        .and_then(|s| s.pod_ip.as_deref())
-        .unwrap_or("N/A");
+    let phase = status.and_then(|s| s.phase.as_deref()).unwrap_or("Unknown");
+    let host_ip = status.and_then(|s| s.host_ip.as_deref()).unwrap_or("N/A");
+    let pod_ip = status.and_then(|s| s.pod_ip.as_deref()).unwrap_or("N/A");
     let restarts: i32 = status
         .and_then(|s| s.container_statuses.as_ref())
         .map(|cs| cs.iter().map(|c| c.restart_count).sum())
@@ -182,7 +174,10 @@ pub fn service_summary(svc: &Service) -> String {
                         "{}/{}->{}",
                         p.port,
                         p.protocol.as_deref().unwrap_or("TCP"),
-                        p.target_port.as_ref().map(int_or_string_display).unwrap_or_default()
+                        p.target_port
+                            .as_ref()
+                            .map(int_or_string_display)
+                            .unwrap_or_default()
                     )
                 })
                 .collect()
@@ -256,16 +251,18 @@ impl Tool for ListNamespaces {
             .map(|ns| {
                 let name = ns.metadata.name.as_deref().unwrap_or("unknown");
                 let status = ns.status.as_ref();
-                let phase = status
-                    .and_then(|s| s.phase.as_deref())
-                    .unwrap_or("Unknown");
+                let phase = status.and_then(|s| s.phase.as_deref()).unwrap_or("Unknown");
                 format!("{name} (phase: {phase})")
             })
             .collect();
         if items.is_empty() {
             Ok("No namespaces found.".to_string())
         } else {
-            Ok(format!("Namespaces ({}):\n{}", items.len(), items.join("\n")))
+            Ok(format!(
+                "Namespaces ({}):\n{}",
+                items.len(),
+                items.join("\n")
+            ))
         }
     }
 }
@@ -301,7 +298,11 @@ impl Tool for GetNodes {
         if items.is_empty() {
             Ok("No nodes found.".to_string())
         } else {
-            Ok(format!("Nodes ({}):\n{}", items.len(), items.join("\n---\n")))
+            Ok(format!(
+                "Nodes ({}):\n{}",
+                items.len(),
+                items.join("\n---\n")
+            ))
         }
     }
 }
@@ -566,10 +567,9 @@ impl Tool for GetNodeDetails {
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
         let api: Api<Node> = Api::all(self.client.clone());
-        let node = api
-            .get(&args.name)
-            .await
-            .map_err(|e| KubeToolError::Other(format!("Failed to get node {}: {}", args.name, e)))?;
+        let node = api.get(&args.name).await.map_err(|e| {
+            KubeToolError::Other(format!("Failed to get node {}: {}", args.name, e))
+        })?;
         let summary = node_summary(&node);
         let extra = node
             .status
@@ -640,10 +640,9 @@ impl Tool for GetPodLogs {
             tail_lines: Some(100),
             ..Default::default()
         };
-        let logs = api
-            .logs(&args.pod, &log_params)
-            .await
-            .map_err(|e| KubeToolError::Other(format!("Failed to get logs for pod {}: {}", args.pod, e)))?;
+        let logs = api.logs(&args.pod, &log_params).await.map_err(|e| {
+            KubeToolError::Other(format!("Failed to get logs for pod {}: {}", args.pod, e))
+        })?;
         Ok(logs)
     }
 }
