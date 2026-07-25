@@ -553,13 +553,11 @@ metadata:
     async fn test_write_and_read_artifact() {
         let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         std::fs::create_dir_all(&dir).unwrap();
-        let orig_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&dir).unwrap();
 
         let write = WriteArtifact;
         let result = write
             .call(WriteArtifactArgs {
-                path: "test-output.txt".into(),
+                path: dir.join("test-output.txt").to_str().unwrap().into(),
                 content: "hello world".into(),
             })
             .await
@@ -569,13 +567,12 @@ metadata:
         let read = ReadArtifact;
         let content = read
             .call(ReadArtifactArgs {
-                path: "test-output.txt".into(),
+                path: dir.join("test-output.txt").to_str().unwrap().into(),
             })
             .await
             .unwrap();
         assert_eq!(content, "hello world");
 
-        std::env::set_current_dir(orig_dir).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -583,25 +580,18 @@ metadata:
     async fn test_list_artifacts() {
         let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         std::fs::create_dir_all(&dir).unwrap();
-        let orig_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&dir).unwrap();
 
-        std::fs::write("a.yaml", "a").unwrap();
-        std::fs::write("b.yaml", "b").unwrap();
-        std::fs::write("c.json", "c").unwrap();
+        std::fs::write(dir.join("a.yaml"), "a").unwrap();
+        std::fs::write(dir.join("b.yaml"), "b").unwrap();
+        std::fs::write(dir.join("c.json"), "c").unwrap();
 
+        let pattern = format!("{}/*.yaml", dir.display());
         let tool = ListArtifacts;
-        let result = tool
-            .call(ListArtifactsArgs {
-                pattern: "*.yaml".into(),
-            })
-            .await
-            .unwrap();
+        let result = tool.call(ListArtifactsArgs { pattern }).await.unwrap();
         assert!(result.contains("a.yaml"));
         assert!(result.contains("b.yaml"));
         assert!(!result.contains("c.json"));
 
-        std::env::set_current_dir(orig_dir).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
