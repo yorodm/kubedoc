@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
@@ -40,7 +40,6 @@ pub struct App {
     input: String,
     scroll_offset: usize,
     loading: bool,
-    flash_deadline: Option<Instant>,
     viewport_height: usize,
 }
 
@@ -51,7 +50,6 @@ impl App {
             input: String::new(),
             scroll_offset: 0,
             loading: false,
-            flash_deadline: None,
             viewport_height: 20,
         }
     }
@@ -155,7 +153,7 @@ impl App {
         self.viewport_height = messages_area.height as usize;
 
         let header = Span::styled(
-            " kubedoc — Interactive Session  |  /help commands  |  Ctrl+D quit  |  Ctrl+L clear",
+            " kubedoc — Interactive Session  |  /help commands  |  Ctrl+C cancel  |  Ctrl+D quit  |  Ctrl+L clear",
             Style::default()
                 .fg(Color::White)
                 .bg(Color::DarkGray)
@@ -228,20 +226,8 @@ impl App {
             .scroll((scroll as u16, 0));
         frame.render_widget(messages_widget, messages_area);
 
-        let is_flashing = self
-            .flash_deadline
-            .map(|d| Instant::now() < d)
-            .unwrap_or(false);
-
-        let input_style = if is_flashing {
-            Style::default().fg(Color::Red)
-        } else if self.loading {
+        let input_style = if self.loading {
             Style::default().fg(Color::DarkGray)
-        } else {
-            Style::default()
-        };
-        let input_border_style = if is_flashing {
-            Style::default().fg(Color::Red)
         } else {
             Style::default()
         };
@@ -253,11 +239,7 @@ impl App {
             format!(" {}", self.input)
         };
         let input_widget = Paragraph::new(input_display)
-            .block(
-                Block::bordered()
-                    .title(" Input ")
-                    .border_style(input_border_style),
-            )
+            .block(Block::bordered().title(" Input "))
             .style(input_style);
         frame.render_widget(input_widget, input_area);
 
@@ -339,152 +321,126 @@ async fn run_loop<M: CompletionModel + Clone + 'static>(
     draw_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
-        if app.flash_deadline.is_some_and(|d| Instant::now() >= d) {
-            app.flash_deadline = None;
-        }
         app.drain_progress(progress_rx);
         terminal.draw(|frame| app.render(frame))?;
 
-        if app.loading {
-            if let Some(fut) = agent_fut.as_mut() {
-                tokio::select! {
-                    result = fut.as_mut() => {
-                        match result {
-                            Ok(response) => {
-                                app.add_message(MessageRole::Assistant, &response);
+        tokio::select! {
+            result = async {
+                match agent_fut.as_mut() {
+                    Some(fut) => Some(fut.as_mut().await),
+                    None => std::future::pending().await,
+                }
+            } => {
+                match result {
+                    Some(Ok(response)) => {
+                        app.add_message(MessageRole::Assistant, &response);
+                        if let (Some(sm), Some(sd)) = (session_manager, session_data.as_mut()) {
+                            let _ = sm.add_entry(sd, "assistant", &response);
+                        }
+                    }
+                    Some(Err(e)) => {
+                        app.add_message(MessageRole::Error, &format!("Agent error: {e}"));
+                    }
+                    None => {}
+                }
+                app.loading = false;
+                agent_fut = None;
+            }
+            _ = draw_interval.tick() => {}
+            event = events.next() => {
+                match event {
+                    Some(Event::Key(key)) if key.kind == KeyEventKind::Press => {
+                        match key.code {
+                            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
+                            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                if app.loading {
+                                    app.loading = false;
+                                    agent_fut = None;
+                                    app.add_message(MessageRole::System, "Agent cancelled.");
+                                } else {
+                                    app.input.clear();
+                                }
+                            }
+                            KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                app.messages.clear();
+                            }
+                            KeyCode::Enter if !app.input.is_empty() && !app.loading => {
+                                let input = std::mem::take(&mut app.input);
+
+                                if input.starts_with('/') {
+                                    match handle_slash_command(&input, app, session_manager, session_data.as_mut())
+                                    {
+                                        CommandResult::Continue => {}
+                                        CommandResult::Exit => break,
+                                        CommandResult::Load(data) => {
+                                            app.messages.clear();
+                                            app.add_message(
+                                                MessageRole::System,
+                                                &format!(
+                                                    "Loaded session: {} ({} entries)",
+                                                    data.session_id,
+                                                    data.entries.len()
+                                                ),
+                                            );
+                                            for entry in &data.entries {
+                                                let role = match entry.role.as_str() {
+                                                    "user" => MessageRole::User,
+                                                    "assistant" => MessageRole::Assistant,
+                                                    _ => MessageRole::System,
+                                                };
+                                                app.add_message(role, &entry.content);
+                                            }
+                                            let new_id = data.session_id.clone();
+                                            if let Err(e) = coordinator.switch_session(&new_id, &data.entries).await
+                                            {
+                                                app.add_message(
+                                                    MessageRole::Error,
+                                                    &format!("Failed to restore session memory: {e}"),
+                                                );
+                                            }
+                                            if let Some(sd) = session_data {
+                                                *sd = data;
+                                            }
+                                        }
+                                    }
+                                    continue;
+                                }
+
+                                app.add_message(MessageRole::User, &input);
+
+                                if let Some(log) = audit_log {
+                                    let _ = log.user_prompt(&input);
+                                }
+
                                 if let (Some(sm), Some(sd)) = (session_manager, session_data.as_mut()) {
-                                    let _ = sm.add_entry(sd, "assistant", &response);
+                                    let _ = sm.add_entry(sd, "user", &input);
                                 }
+
+                                app.loading = true;
+                                let prompt = input;
+                                let coord = coordinator.clone();
+                                agent_fut = Some(Box::pin(async move { coord.run(&prompt).await }));
                             }
-                            Err(e) => {
-                                app.add_message(MessageRole::Error, &format!("Agent error: {e}"));
+                            KeyCode::Up => app.scroll_up(),
+                            KeyCode::Down => app.scroll_down(),
+                            KeyCode::PageUp => {
+                                app.scroll_offset = app.scroll_offset.saturating_sub(20);
                             }
-                        }
-                        app.loading = false;
-                        agent_fut = None;
-                    }
-                    _ = draw_interval.tick() => {}
-                    event = events.next() => {
-                        match event {
-                            Some(Event::Key(key)) if key.kind == KeyEventKind::Press => {
-                                match key.code {
-                                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
-                                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
-                                    KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                        app.messages.clear();
-                                    }
-                                    KeyCode::Up | KeyCode::Char('k') => app.scroll_up(),
-                                    KeyCode::Down | KeyCode::Char('j') => app.scroll_down(),
-                                    KeyCode::PageUp => {
-                                        app.scroll_offset = app.scroll_offset.saturating_sub(20);
-                                    }
-                                    KeyCode::PageDown => {
-                                        app.scroll_offset = app.scroll_offset.saturating_add(20);
-                                    }
-                                    _ => {}
-                                }
+                            KeyCode::PageDown => {
+                                app.scroll_offset = app.scroll_offset.saturating_add(20);
                             }
-                            Some(_) | None => {}
+                            KeyCode::Char(c) if !app.loading => {
+                                app.input.push(c);
+                            }
+                            KeyCode::Backspace if !app.loading => {
+                                app.input.pop();
+                            }
+                            _ => {}
                         }
                     }
+                    Some(_) | None => {}
                 }
             }
-            continue;
-        }
-
-        let event = match events.next().await {
-            Some(e) => e,
-            None => break,
-        };
-
-        let Event::Key(key) = event;
-
-        if key.kind != KeyEventKind::Press {
-            continue;
-        }
-
-        match key.code {
-            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
-            KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                app.messages.clear();
-            }
-            KeyCode::Enter if !app.input.is_empty() => {
-                if app.loading {
-                    app.flash_deadline = Some(Instant::now() + Duration::from_millis(300));
-                    continue;
-                }
-                let input = std::mem::take(&mut app.input);
-
-                if input.starts_with('/') {
-                    match handle_slash_command(&input, app, session_manager, session_data.as_mut())
-                    {
-                        CommandResult::Continue => {}
-                        CommandResult::Exit => break,
-                        CommandResult::Load(data) => {
-                            app.messages.clear();
-                            app.add_message(
-                                MessageRole::System,
-                                &format!(
-                                    "Loaded session: {} ({} entries)",
-                                    data.session_id,
-                                    data.entries.len()
-                                ),
-                            );
-                            for entry in &data.entries {
-                                let role = match entry.role.as_str() {
-                                    "user" => MessageRole::User,
-                                    "assistant" => MessageRole::Assistant,
-                                    _ => MessageRole::System,
-                                };
-                                app.add_message(role, &entry.content);
-                            }
-                            let new_id = data.session_id.clone();
-                            if let Err(e) = coordinator.switch_session(&new_id, &data.entries).await
-                            {
-                                app.add_message(
-                                    MessageRole::Error,
-                                    &format!("Failed to restore session memory: {e}"),
-                                );
-                            }
-                            if let Some(sd) = session_data {
-                                *sd = data;
-                            }
-                        }
-                    }
-                    continue;
-                }
-
-                app.add_message(MessageRole::User, &input);
-
-                if let Some(log) = audit_log {
-                    let _ = log.user_prompt(&input);
-                }
-
-                if let (Some(sm), Some(sd)) = (session_manager, session_data.as_mut()) {
-                    let _ = sm.add_entry(sd, "user", &input);
-                }
-
-                app.loading = true;
-                let prompt = input;
-                let coord = coordinator.clone();
-                agent_fut = Some(Box::pin(async move { coord.run(&prompt).await }));
-            }
-            KeyCode::Up => app.scroll_up(),
-            KeyCode::Down => app.scroll_down(),
-            KeyCode::PageUp => {
-                app.scroll_offset = app.scroll_offset.saturating_sub(20);
-            }
-            KeyCode::PageDown => {
-                app.scroll_offset = app.scroll_offset.saturating_add(20);
-            }
-            KeyCode::Char(c) => {
-                app.input.push(c);
-            }
-            KeyCode::Backspace => {
-                app.input.pop();
-            }
-            _ => {}
         }
     }
 
@@ -521,7 +477,13 @@ Available commands:
   /load <session-id>      Load a previous session
   /delete <session-id>    Delete a session
   /exit, /quit, /q        Exit kubedoc
-  /help, /h               Show this help",
+  /help, /h               Show this help
+
+Keybindings:
+  Ctrl+C                  Cancel running agent (or clear input)
+  Ctrl+D                  Exit kubedoc
+  Ctrl+L                  Clear conversation
+  Up/Down                 Scroll conversation",
             );
         }
         "/sessions" | "/ls" => {
