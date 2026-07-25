@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
@@ -41,6 +41,7 @@ pub struct App {
     scroll_offset: usize,
     loading: bool,
     auto_scroll: bool,
+    flash_deadline: Option<Instant>,
 }
 
 impl App {
@@ -51,6 +52,7 @@ impl App {
             scroll_offset: 0,
             loading: false,
             auto_scroll: true,
+            flash_deadline: None,
         }
     }
 
@@ -63,7 +65,7 @@ impl App {
             self.messages.pop_front();
         }
         if self.auto_scroll {
-            self.scroll_offset = 0;
+            self.scroll_offset = usize::MAX;
         }
     }
 
@@ -212,8 +214,20 @@ impl App {
             .scroll((scroll as u16, 0));
         frame.render_widget(messages_widget, messages_area);
 
-        let input_style = if self.loading {
+        let is_flashing = self
+            .flash_deadline
+            .map(|d| Instant::now() < d)
+            .unwrap_or(false);
+
+        let input_style = if is_flashing {
+            Style::default().fg(Color::Red)
+        } else if self.loading {
             Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default()
+        };
+        let input_border_style = if is_flashing {
+            Style::default().fg(Color::Red)
         } else {
             Style::default()
         };
@@ -225,7 +239,11 @@ impl App {
             format!(" {}", self.input)
         };
         let input_widget = Paragraph::new(input_display)
-            .block(Block::bordered().title(" Input "))
+            .block(
+                Block::bordered()
+                    .title(" Input ")
+                    .border_style(input_border_style),
+            )
             .style(input_style);
         frame.render_widget(input_widget, input_area);
 
@@ -239,15 +257,13 @@ impl App {
     }
 
     fn scroll_up(&mut self) {
-        self.scroll_offset = self.scroll_offset.saturating_add(3);
+        self.scroll_offset = self.scroll_offset.saturating_sub(3);
         self.auto_scroll = false;
     }
 
     fn scroll_down(&mut self) {
-        self.scroll_offset = self.scroll_offset.saturating_sub(3);
-        if self.scroll_offset == 0 {
-            self.auto_scroll = true;
-        }
+        self.scroll_offset = self.scroll_offset.saturating_add(3);
+        self.auto_scroll = false;
     }
 }
 
@@ -307,8 +323,13 @@ async fn run_loop<M: CompletionModel + Clone + 'static>(
 ) -> anyhow::Result<()> {
     let mut events = EventHandler::new(Duration::from_millis(100));
     let mut agent_fut: Option<AgentFuture> = None;
+    let mut draw_interval = tokio::time::interval(Duration::from_millis(100));
+    draw_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
+        if app.flash_deadline.is_some_and(|d| Instant::now() >= d) {
+            app.flash_deadline = None;
+        }
         app.drain_progress(progress_rx);
         terminal.draw(|frame| app.render(frame))?;
 
@@ -330,6 +351,7 @@ async fn run_loop<M: CompletionModel + Clone + 'static>(
                         app.loading = false;
                         agent_fut = None;
                     }
+                    _ = draw_interval.tick() => {}
                     event = events.next() => {
                         match event {
                             Some(Event::Key(key)) if key.kind == KeyEventKind::Press => {
@@ -342,14 +364,12 @@ async fn run_loop<M: CompletionModel + Clone + 'static>(
                                     KeyCode::Up | KeyCode::Char('k') => app.scroll_up(),
                                     KeyCode::Down | KeyCode::Char('j') => app.scroll_down(),
                                     KeyCode::PageUp => {
-                                        app.scroll_offset = app.scroll_offset.saturating_add(20);
+                                        app.scroll_offset = app.scroll_offset.saturating_sub(20);
                                         app.auto_scroll = false;
                                     }
                                     KeyCode::PageDown => {
-                                        app.scroll_offset = app.scroll_offset.saturating_sub(20);
-                                        if app.scroll_offset == 0 {
-                                            app.auto_scroll = true;
-                                        }
+                                        app.scroll_offset = app.scroll_offset.saturating_add(20);
+                                        app.auto_scroll = false;
                                     }
                                     _ => {}
                                 }
@@ -379,7 +399,11 @@ async fn run_loop<M: CompletionModel + Clone + 'static>(
             KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 app.messages.clear();
             }
-            KeyCode::Enter if !app.input.is_empty() && !app.loading => {
+            KeyCode::Enter if !app.input.is_empty() => {
+                if app.loading {
+                    app.flash_deadline = Some(Instant::now() + Duration::from_millis(300));
+                    continue;
+                }
                 let input = std::mem::take(&mut app.input);
 
                 if input.starts_with('/') {
@@ -440,14 +464,12 @@ async fn run_loop<M: CompletionModel + Clone + 'static>(
             KeyCode::Up => app.scroll_up(),
             KeyCode::Down => app.scroll_down(),
             KeyCode::PageUp => {
-                app.scroll_offset = app.scroll_offset.saturating_add(20);
+                app.scroll_offset = app.scroll_offset.saturating_sub(20);
                 app.auto_scroll = false;
             }
             KeyCode::PageDown => {
-                app.scroll_offset = app.scroll_offset.saturating_sub(20);
-                if app.scroll_offset == 0 {
-                    app.auto_scroll = true;
-                }
+                app.scroll_offset = app.scroll_offset.saturating_add(20);
+                app.auto_scroll = false;
             }
             KeyCode::Char(c) => {
                 app.input.push(c);
