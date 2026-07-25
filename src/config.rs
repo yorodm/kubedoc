@@ -33,14 +33,6 @@ pub struct KubeConfig {
 
 #[derive(Debug, Deserialize, Default)]
 pub struct McpConfig {
-    #[allow(dead_code)]
-    pub enabled: Option<bool>,
-    #[allow(dead_code)]
-    pub transport: Option<String>,
-    #[allow(dead_code)]
-    pub bind: Option<String>,
-    #[allow(dead_code)]
-    pub tools: Option<Vec<String>>,
     pub servers: Option<Vec<McpServerConfig>>,
 }
 
@@ -49,16 +41,11 @@ pub struct McpServerConfig {
     pub name: String,
     pub command: Option<Vec<String>>,
     pub url: Option<String>,
-    #[allow(dead_code)]
-    pub tools: Option<Vec<String>>,
 }
 
 impl KubedocConfig {
     /// Load config from file, then apply env var overrides, then CLI arg overrides.
-    pub fn load(
-        config_path: Option<&str>,
-        cli: &crate::cli::Cli,
-    ) -> anyhow::Result<Self> {
+    pub fn load(config_path: Option<&str>, cli: &crate::cli::Cli) -> anyhow::Result<Self> {
         let path = config_path
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| kubedoc_home(cli.data_dir.as_deref()).join("config.toml"));
@@ -72,6 +59,11 @@ impl KubedocConfig {
 
         config.apply_env_overrides();
         config.apply_cli_overrides(cli);
+        if config.llm.provider.is_empty() || config.llm.model.is_empty() {
+            anyhow::bail!(
+                "LLM provider and model must be configured (via config file, env vars, or CLI args)"
+            );
+        }
         Ok(config)
     }
 

@@ -3,7 +3,33 @@ use kube::discovery::Scope;
 use rig_core::tool::Tool;
 use serde::Deserialize;
 use serde_json::json;
-use std::path::Path;
+use std::path::PathBuf;
+
+/// Validate that a user-supplied path is safe (no `..`, no absolute paths).
+fn validate_path(path: &str) -> Result<PathBuf, FileToolError> {
+    if path.contains("..") {
+        return Err(FileToolError::Other(
+            "Path must not contain '..'".to_string(),
+        ));
+    }
+    let p = PathBuf::from(path);
+    if p.is_absolute() {
+        return Err(FileToolError::Other(
+            "Path must be relative, not absolute".to_string(),
+        ));
+    }
+    Ok(p)
+}
+
+/// Validate a glob pattern doesn't escape the working directory.
+fn validate_glob_pattern(pattern: &str) -> Result<(), FileToolError> {
+    if pattern.contains("..") {
+        return Err(FileToolError::Other(
+            "Pattern must not contain '..'".to_string(),
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum FileToolError {
@@ -50,13 +76,13 @@ impl Tool for WriteArtifact {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        let path = Path::new(&args.path);
+        let path = validate_path(&args.path)?;
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
         {
-            std::fs::create_dir_all(parent)?;
+            tokio::fs::create_dir_all(parent).await?;
         }
-        std::fs::write(path, &args.content)?;
+        tokio::fs::write(&path, &args.content).await?;
         Ok(format!(
             "Written {} bytes to {}",
             args.content.len(),
@@ -97,7 +123,8 @@ impl Tool for ReadArtifact {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        let content = std::fs::read_to_string(&args.path)?;
+        let _path = validate_path(&args.path)?;
+        let content = tokio::fs::read_to_string(&_path).await?;
         Ok(content)
     }
 }
@@ -134,6 +161,7 @@ impl Tool for ListArtifacts {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        validate_glob_pattern(&args.pattern)?;
         let entries = glob::glob(&args.pattern)
             .map_err(|e| FileToolError::Other(format!("Invalid glob pattern: {e}")))?;
         let paths: Vec<String> = entries
@@ -163,8 +191,8 @@ pub struct GenerateManifestArgs {
     pub namespace: Option<String>,
 }
 
-fn kind_to_api_version(kind: &str) -> &str {
-    match kind {
+fn kind_to_api_version(kind: &str) -> Result<&'static str, FileToolError> {
+    let v = match kind {
         "Pod"
         | "Service"
         | "ConfigMap"
@@ -209,8 +237,11 @@ fn kind_to_api_version(kind: &str) -> &str {
         "ValidatingAdmissionPolicy" | "ValidatingAdmissionPolicyBinding" => {
             "admissionregistration.k8s.io/v1"
         }
-        _ => "v1",
-    }
+        _ => return Err(FileToolError::Other(format!(
+            "Unknown resource kind: {kind}. Provide a valid Kubernetes resource kind."
+        ))),
+    };
+    Ok(v)
 }
 
 pub struct GenerateManifest;
@@ -252,7 +283,7 @@ impl Tool for GenerateManifest {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        let api_version = kind_to_api_version(&args.kind);
+        let api_version = kind_to_api_version(&args.kind)?;
         let spec_value: serde_json::Value = serde_json::from_str(&args.spec)
             .map_err(|e| FileToolError::Other(format!("Invalid spec JSON: {e}")))?;
 
@@ -267,9 +298,11 @@ impl Tool for GenerateManifest {
         doc.insert("kind".into(), json!(&args.kind));
         doc.insert("metadata".into(), json!(metadata));
         if let Some(obj) = spec_value.as_object() {
+            let mut spec_map = serde_json::Map::new();
             for (k, v) in obj {
-                doc.insert(k.clone(), v.clone());
+                spec_map.insert(k.clone(), v.clone());
             }
+            doc.insert("spec".into(), json!(spec_map));
         } else if !spec_value.is_null() {
             doc.insert("spec".into(), spec_value);
         }
@@ -553,11 +586,13 @@ metadata:
     async fn test_write_and_read_artifact() {
         let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         std::fs::create_dir_all(&dir).unwrap();
+        let orig_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
 
         let write = WriteArtifact;
         let result = write
             .call(WriteArtifactArgs {
-                path: dir.join("test-output.txt").to_str().unwrap().into(),
+                path: "test-output.txt".into(),
                 content: "hello world".into(),
             })
             .await
@@ -567,12 +602,13 @@ metadata:
         let read = ReadArtifact;
         let content = read
             .call(ReadArtifactArgs {
-                path: dir.join("test-output.txt").to_str().unwrap().into(),
+                path: "test-output.txt".into(),
             })
             .await
             .unwrap();
         assert_eq!(content, "hello world");
 
+        let _ = std::env::set_current_dir(&orig_dir);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -580,7 +616,6 @@ metadata:
     async fn test_list_artifacts() {
         let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         std::fs::create_dir_all(&dir).unwrap();
-
         std::fs::write(dir.join("a.yaml"), "a").unwrap();
         std::fs::write(dir.join("b.yaml"), "b").unwrap();
         std::fs::write(dir.join("c.json"), "c").unwrap();

@@ -58,15 +58,19 @@ impl SessionManager {
             let path = entry.path();
             if path.extension().is_some_and(|e| e == "json")
                 && let Ok(content) = std::fs::read_to_string(&path)
-                    && let Ok(data) = serde_json::from_str::<SessionData>(&content) {
-                        sessions.push(data);
-                    }
+                && let Ok(data) = serde_json::from_str::<SessionData>(&content)
+            {
+                sessions.push(data);
+            }
         }
         sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(sessions)
     }
 
     pub fn load(&self, session_id: &str) -> anyhow::Result<Option<SessionData>> {
+        if !session_id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.') {
+            anyhow::bail!("Invalid session ID: must only contain alphanumeric characters, hyphens, underscores, or dots");
+        }
         let path = self.session_path(session_id);
         if !path.exists() {
             return Ok(None);
@@ -82,7 +86,12 @@ impl SessionManager {
         Ok(())
     }
 
-    pub fn add_entry(&self, data: &mut SessionData, role: &str, content: &str) -> anyhow::Result<()> {
+    pub fn add_entry(
+        &self,
+        data: &mut SessionData,
+        role: &str,
+        content: &str,
+    ) -> anyhow::Result<()> {
         data.entries.push(Entry {
             role: role.to_string(),
             content: content.to_string(),
@@ -92,6 +101,9 @@ impl SessionManager {
     }
 
     pub fn delete(&self, session_id: &str) -> anyhow::Result<()> {
+        if !session_id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.') {
+            anyhow::bail!("Invalid session ID: must only contain alphanumeric characters, hyphens, underscores, or dots");
+        }
         let path = self.session_path(session_id);
         if path.exists() {
             std::fs::remove_file(&path)?;

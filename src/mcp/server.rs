@@ -10,6 +10,7 @@ use rmcp::model::{
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::transport::stdio;
 use rmcp::{ErrorData, ServerHandler, ServiceExt};
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::tools::kube_client;
@@ -202,7 +203,7 @@ impl KubedocMcpServer {
         let result = match name {
             "list_namespaces" => {
                 let api: Api<Namespace> = Api::all(self.client.clone());
-                let list = api.list(&ListParams::default()).await.map_err(to_error)?;
+                let list = api.list(&ListParams::default().limit(500)).await.map_err(to_error)?;
                 let items: Vec<String> = list
                     .items
                     .iter()
@@ -224,12 +225,8 @@ impl KubedocMcpServer {
             }
             "get_nodes" => {
                 let api: Api<Node> = Api::all(self.client.clone());
-                let list = api.list(&ListParams::default()).await.map_err(to_error)?;
-                let items: Vec<String> = list
-                    .items
-                    .iter()
-                    .map(kube_client::node_summary)
-                    .collect();
+                let list = api.list(&ListParams::default().limit(500)).await.map_err(to_error)?;
+                let items: Vec<String> = list.items.iter().map(kube_client::node_summary).collect();
                 if items.is_empty() {
                     "No nodes found.".to_string()
                 } else {
@@ -242,12 +239,8 @@ impl KubedocMcpServer {
                     Some(ref ns) => Api::namespaced(self.client.clone(), ns),
                     None => Api::all(self.client.clone()),
                 };
-                let list = api.list(&ListParams::default()).await.map_err(to_error)?;
-                let items: Vec<String> = list
-                    .items
-                    .iter()
-                    .map(kube_client::pod_summary)
-                    .collect();
+                let list = api.list(&ListParams::default().limit(500)).await.map_err(to_error)?;
+                let items: Vec<String> = list.items.iter().map(kube_client::pod_summary).collect();
                 if items.is_empty() {
                     "No pods found.".to_string()
                 } else {
@@ -260,12 +253,9 @@ impl KubedocMcpServer {
                     Some(ref ns) => Api::namespaced(self.client.clone(), ns),
                     None => Api::all(self.client.clone()),
                 };
-                let list = api.list(&ListParams::default()).await.map_err(to_error)?;
-                let items: Vec<String> = list
-                    .items
-                    .iter()
-                    .map(kube_client::event_summary)
-                    .collect();
+                let list = api.list(&ListParams::default().limit(500)).await.map_err(to_error)?;
+                let items: Vec<String> =
+                    list.items.iter().map(kube_client::event_summary).collect();
                 if items.is_empty() {
                     "No events found.".to_string()
                 } else {
@@ -278,7 +268,7 @@ impl KubedocMcpServer {
                     Some(ref ns) => Api::namespaced(self.client.clone(), ns),
                     None => Api::all(self.client.clone()),
                 };
-                let list = api.list(&ListParams::default()).await.map_err(to_error)?;
+                let list = api.list(&ListParams::default().limit(500)).await.map_err(to_error)?;
                 let items: Vec<String> = list
                     .items
                     .iter()
@@ -296,7 +286,7 @@ impl KubedocMcpServer {
                     Some(ref ns) => Api::namespaced(self.client.clone(), ns),
                     None => Api::all(self.client.clone()),
                 };
-                let list = api.list(&ListParams::default()).await.map_err(to_error)?;
+                let list = api.list(&ListParams::default().limit(500)).await.map_err(to_error)?;
                 let items: Vec<String> = list
                     .items
                     .iter()
@@ -314,7 +304,7 @@ impl KubedocMcpServer {
                     Some(ref ns) => Api::namespaced(self.client.clone(), ns),
                     None => Api::all(self.client.clone()),
                 };
-                let list = api.list(&ListParams::default()).await.map_err(to_error)?;
+                let list = api.list(&ListParams::default().limit(500)).await.map_err(to_error)?;
                 let items: Vec<String> = list
                     .items
                     .iter()
@@ -380,18 +370,26 @@ impl KubedocMcpServer {
             "write_artifact" => {
                 let path = extract_req(&mut args, "path")?;
                 let content = extract_req(&mut args, "content")?;
-                let p = std::path::Path::new(&path);
+                if path.contains("..") || Path::new(&path).is_absolute() {
+                    return Err(ErrorData::new(
+                        ErrorCode::INVALID_PARAMS,
+                        "Path must be relative and must not contain '..'".to_string(),
+                        None,
+                    ));
+                }
+                let p = Path::new(&path);
                 if let Some(parent) = p.parent()
-                    && !parent.as_os_str().is_empty() {
-                        std::fs::create_dir_all(parent).map_err(|e| {
-                            ErrorData::new(
-                                ErrorCode::INTERNAL_ERROR,
-                                format!("Failed to create directory: {e}"),
-                                None,
-                            )
-                        })?;
-                    }
-                std::fs::write(p, &content).map_err(|e| {
+                    && !parent.as_os_str().is_empty()
+                {
+                    tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                        ErrorData::new(
+                            ErrorCode::INTERNAL_ERROR,
+                            format!("Failed to create directory: {e}"),
+                            None,
+                        )
+                    })?;
+                }
+                tokio::fs::write(p, &content).await.map_err(|e| {
                     ErrorData::new(
                         ErrorCode::INTERNAL_ERROR,
                         format!("Failed to write file: {e}"),
@@ -402,7 +400,14 @@ impl KubedocMcpServer {
             }
             "read_artifact" => {
                 let path = extract_req(&mut args, "path")?;
-                std::fs::read_to_string(&path).map_err(|e| {
+                if path.contains("..") || Path::new(&path).is_absolute() {
+                    return Err(ErrorData::new(
+                        ErrorCode::INVALID_PARAMS,
+                        "Path must be relative and must not contain '..'".to_string(),
+                        None,
+                    ));
+                }
+                tokio::fs::read_to_string(&path).await.map_err(|e| {
                     ErrorData::new(
                         ErrorCode::INTERNAL_ERROR,
                         format!("Failed to read file: {e}"),
@@ -412,6 +417,13 @@ impl KubedocMcpServer {
             }
             "list_artifacts" => {
                 let pattern = extract_req(&mut args, "pattern")?;
+                if pattern.contains("..") {
+                    return Err(ErrorData::new(
+                        ErrorCode::INVALID_PARAMS,
+                        "Pattern must be relative and must not contain '..'".to_string(),
+                        None,
+                    ));
+                }
                 let entries = glob::glob(&pattern).map_err(|e| {
                     ErrorData::new(
                         ErrorCode::INVALID_PARAMS,

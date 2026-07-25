@@ -19,7 +19,7 @@ pub enum McpClientError {
 pub struct McpConnection {
     /// Keep the running service alive for the lifetime of the agent.
     #[allow(dead_code)]
-    running_service: Box<dyn std::any::Any + Send>,
+    running_service: Box<dyn std::any::Any + Send + Sync>,
 }
 
 /// Connect to an MCP server and register its tools with the shared handle.

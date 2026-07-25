@@ -37,7 +37,16 @@ pub struct Coordinator<M: CompletionModel> {
     agent: rig_core::agent::Agent<M>,
     /// Hold MCP server connections alive for the lifetime of the coordinator.
     #[allow(dead_code)]
-    mcp_connections: Vec<crate::mcp::client::McpConnection>,
+    mcp_connections: Arc<Vec<crate::mcp::client::McpConnection>>,
+}
+
+impl<M: CompletionModel + Clone> Clone for Coordinator<M> {
+    fn clone(&self) -> Self {
+        Self {
+            agent: self.agent.clone(),
+            mcp_connections: Arc::clone(&self.mcp_connections),
+        }
+    }
 }
 
 impl<M: CompletionModel + 'static> Coordinator<M> {
@@ -84,7 +93,7 @@ impl<M: CompletionModel + 'static> Coordinator<M> {
 
         Ok(Self {
             agent,
-            mcp_connections,
+            mcp_connections: Arc::new(mcp_connections),
         })
     }
 

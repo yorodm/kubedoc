@@ -27,10 +27,7 @@ pub struct AuditEntry {
 }
 
 impl AuditLog {
-    pub fn new(
-        session_id: &str,
-        data_dir: Option<&str>,
-    ) -> anyhow::Result<Self> {
+    pub fn new(session_id: &str, data_dir: Option<&str>) -> anyhow::Result<Self> {
         let dir = crate::config::kubedoc_home(data_dir).join("audit");
 
         std::fs::create_dir_all(&dir)?;
@@ -96,7 +93,12 @@ impl AuditLog {
         )
     }
 
-    pub fn tool_result(&self, agent: &str, tool_name: &str, result_summary: &str) -> anyhow::Result<()> {
+    pub fn tool_result(
+        &self,
+        agent: &str,
+        tool_name: &str,
+        result_summary: &str,
+    ) -> anyhow::Result<()> {
         self.log_event(
             "tool_result",
             Some(agent),
@@ -158,10 +160,11 @@ impl<M: CompletionModel + 'static> AgentHook<M> for AuditHook {
             StepEvent::ToolResult {
                 tool_name, result, ..
             } => {
-                let summary = if result.len() > 200 {
-                    format!("{}...", &result[..200])
+                let summary = result.chars().take(200).collect::<String>();
+                let summary = if summary.len() < result.len() {
+                    format!("{summary}...")
                 } else {
-                    result.to_string()
+                    summary
                 };
                 if let Err(e) = log.tool_result("coordinator", tool_name, &summary) {
                     tracing::warn!("audit: tool_result failed: {e}");
@@ -184,10 +187,11 @@ impl<M: CompletionModel + 'static> AgentHook<M> for AuditHook {
                         })
                         .collect::<Vec<_>>()
                         .join(" ");
-                    let summary = if text.len() > 500 {
-                        format!("{}...", &text[..500])
+                    let summary = text.chars().take(500).collect::<String>();
+                    let summary = if summary.len() < text.len() {
+                        format!("{summary}...")
                     } else {
-                        text
+                        summary
                     };
                     if let Err(e) = log.agent_response("coordinator", &summary) {
                         tracing::warn!("audit: agent_response failed: {e}");
@@ -202,9 +206,10 @@ impl<M: CompletionModel + 'static> AgentHook<M> for AuditHook {
                         None,
                         None,
                         Some(total),
-                    ) {
-                        tracing::warn!("audit: model_turn failed: {e}");
-                    }
+                    )
+                {
+                    tracing::warn!("audit: model_turn failed: {e}");
+                }
             }
             _ => {}
         }

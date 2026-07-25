@@ -31,10 +31,6 @@ pub struct Cli {
     #[arg(long, short = 'c', env = "KUBEDOC_KUBE_CONTEXT")]
     pub context: Option<String>,
 
-    /// Launch interactive TUI session
-    #[arg(short = 'i', long)]
-    pub interactive: bool,
-
     /// Increase log verbosity
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,

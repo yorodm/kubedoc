@@ -34,9 +34,10 @@ impl RunContext {
         let session_data = session_manager.create();
         let conversation_id = session_data.session_id.clone();
         let memory = Arc::new(InMemoryConversationMemory::new());
+        let home_str = home.to_string_lossy();
         let audit_log = Arc::new(audit::AuditLog::new(
             &conversation_id,
-            Some(&home.to_string_lossy()),
+            Some(&home_str),
         )?);
         Ok(Self {
             session_manager,
@@ -77,12 +78,8 @@ macro_rules! dispatch_provider {
     ($config:expr, $kube:expr, $ctx:expr, $provider:expr) => {
         match $provider.as_str() {
             "openai" => {
-                run_interactive_tui(
-                    providers::openai_completion($config)?,
-                    $kube.clone(),
-                    $ctx,
-                )
-                .await
+                run_interactive_tui(providers::openai_completion($config)?, $kube.clone(), $ctx)
+                    .await
             }
             "anthropic" => {
                 run_interactive_tui(
@@ -93,20 +90,11 @@ macro_rules! dispatch_provider {
                 .await
             }
             "groq" => {
-                run_interactive_tui(
-                    providers::groq_completion($config)?,
-                    $kube.clone(),
-                    $ctx,
-                )
-                .await
+                run_interactive_tui(providers::groq_completion($config)?, $kube.clone(), $ctx).await
             }
             "ollama" => {
-                run_interactive_tui(
-                    providers::ollama_completion($config)?,
-                    $kube.clone(),
-                    $ctx,
-                )
-                .await
+                run_interactive_tui(providers::ollama_completion($config)?, $kube.clone(), $ctx)
+                    .await
             }
             other => Err(anyhow::anyhow!("Unsupported provider: {other}")),
         }
@@ -205,10 +193,7 @@ api_key_env = "OPENAI_API_KEY"   # env var holding the API key
                     .as_deref()
                     .unwrap_or("(current-context from kubeconfig)")
             );
-            println!(
-                "  Audit dir:    {}/audit",
-                kubedoc_home(data_dir).display()
-            );
+            println!("  Audit dir:    {}/audit", kubedoc_home(data_dir).display());
         }
     }
     Ok(())
@@ -216,7 +201,6 @@ api_key_env = "OPENAI_API_KEY"   # env var holding the API key
 
 async fn handle_mcp(
     transport: &str,
-    _bind: &str,
     config: &config::KubedocConfig,
 ) -> anyhow::Result<()> {
     info!("Starting MCP server (transport={transport})");
@@ -245,10 +229,7 @@ async fn handle_mcp(
     Ok(())
 }
 
-fn handle_sessions(
-    action: SessionsAction,
-    data_dir: Option<&str>,
-) -> anyhow::Result<()> {
+fn handle_sessions(action: SessionsAction, data_dir: Option<&str>) -> anyhow::Result<()> {
     let sm = session::SessionManager::new(Some(kubedoc_home(data_dir)))?;
 
     match action {
@@ -262,7 +243,7 @@ fn handle_sessions(
                         "{id:<32}  {entries} entries  {updated}",
                         id = s.session_id,
                         entries = s.entries.len(),
-                        updated = &s.updated_at[..19],
+                        updated = s.updated_at.get(..19).unwrap_or(&s.updated_at),
                     );
                 }
             }
@@ -276,7 +257,7 @@ fn handle_sessions(
                 println!(
                     "Session: {}  (created {})",
                     data.session_id,
-                    &data.created_at[..19]
+                    data.created_at.get(..19).unwrap_or(&data.created_at)
                 );
                 println!("---");
                 for entry in &data.entries {
@@ -349,8 +330,8 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Config { action }) => {
             handle_config(action, cli.data_dir.as_deref(), &config)?;
         }
-        Some(Commands::Mcp { transport, bind }) => {
-            handle_mcp(&transport, &bind, &config).await?;
+        Some(Commands::Mcp { transport, .. }) => {
+            handle_mcp(&transport, &config).await?;
         }
         Some(Commands::Sessions { action }) => {
             handle_sessions(action, cli.data_dir.as_deref())?;
@@ -361,7 +342,8 @@ async fn main() -> anyhow::Result<()> {
                 .as_ref()
                 .and_then(|m| m.servers.clone())
                 .unwrap_or_default();
-            handle_interactive(&config, cli.data_dir.as_deref(), mcp_servers).await
+            handle_interactive(&config, cli.data_dir.as_deref(), mcp_servers)
+                .await
                 .context("Interactive session failed")?;
         }
     }

@@ -1,7 +1,9 @@
+use std::collections::VecDeque;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     DefaultTerminal,
     layout::{Constraint, Layout},
@@ -11,6 +13,7 @@ use ratatui::{
 };
 
 use crate::agents::coordinator::Coordinator;
+use crate::tui::event::{Event, EventHandler};
 use rig_core::completion::CompletionModel;
 
 const MAX_VISIBLE_MESSAGES: usize = 1000;
@@ -21,7 +24,7 @@ struct Message {
 }
 
 pub struct App {
-    messages: Vec<Message>,
+    messages: VecDeque<Message>,
     input: String,
     scroll_offset: usize,
     loading: bool,
@@ -30,7 +33,7 @@ pub struct App {
 impl App {
     fn new() -> Self {
         Self {
-            messages: Vec::new(),
+            messages: VecDeque::new(),
             input: String::new(),
             scroll_offset: 0,
             loading: false,
@@ -38,12 +41,12 @@ impl App {
     }
 
     fn add_message(&mut self, role: &str, content: &str) {
-        self.messages.push(Message {
+        self.messages.push_back(Message {
             role: role.to_string(),
             content: content.to_string(),
         });
         if self.messages.len() > MAX_VISIBLE_MESSAGES {
-            self.messages.remove(0);
+            self.messages.pop_front();
         }
         self.scroll_offset = 0;
     }
@@ -149,7 +152,9 @@ impl App {
     }
 }
 
-pub async fn run<M: CompletionModel + 'static>(
+type AgentFuture = Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>>>>;
+
+pub async fn run<M: CompletionModel + Clone + 'static>(
     coordinator: Coordinator<M>,
     session_id: &str,
     session_manager: Option<&crate::session::SessionManager>,
@@ -190,7 +195,7 @@ pub async fn run<M: CompletionModel + 'static>(
     result
 }
 
-async fn run_loop<M: CompletionModel + 'static>(
+async fn run_loop<M: CompletionModel + Clone + 'static>(
     terminal: &mut DefaultTerminal,
     app: &mut App,
     coordinator: &Coordinator<M>,
@@ -198,87 +203,119 @@ async fn run_loop<M: CompletionModel + 'static>(
     session_data: &mut Option<crate::session::SessionData>,
     audit_log: Option<&crate::audit::AuditLog>,
 ) -> anyhow::Result<()> {
+    let mut events = EventHandler::new(Duration::from_millis(100));
+    let mut agent_fut: Option<AgentFuture> = None;
+
     loop {
         terminal.draw(|frame| app.render(frame))?;
 
-        if !crossterm::event::poll(Duration::from_millis(100))? {
+        if app.loading {
+            // While waiting for agent, race the agent future against terminal events.
+            if let Some(fut) = agent_fut.as_mut() {
+                tokio::select! {
+                    result = fut.as_mut() => {
+                        match result {
+                            Ok(response) => {
+                                app.add_message("assistant", &response);
+                                if let (Some(sm), Some(sd)) = (session_manager, session_data.as_mut()) {
+                                    let _ = sm.add_entry(sd, "assistant", &response);
+                                }
+                            }
+                            Err(e) => {
+                                app.add_message("error", &format!("Agent error: {e}"));
+                            }
+                        }
+                        app.loading = false;
+                        agent_fut = None;
+                    }
+                    event = events.next() => {
+                        match event {
+                            Some(Event::Key(key)) if key.kind == KeyEventKind::Press => {
+                                match key.code {
+                                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
+                                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
+                                    KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                        app.messages.clear();
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            Some(_) | None => {}
+                        }
+                    }
+                }
+            }
             continue;
         }
 
-        let event = event::read()?;
-        if let Event::Key(key) = event {
-            if key.kind != KeyEventKind::Press {
-                continue;
+        // Not loading — wait for next event.
+        let event = match events.next().await {
+            Some(e) => e,
+            None => break,
+        };
+
+        let Event::Key(key) = event;
+
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+
+        match key.code {
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
+            KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.messages.clear();
             }
+            KeyCode::Enter if !app.input.is_empty() && !app.loading => {
+                let input = std::mem::take(&mut app.input);
 
-            match key.code {
-                KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
-                KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.messages.clear();
-                }
-                KeyCode::Enter if !app.input.is_empty() && !app.loading => {
-                    let input = std::mem::take(&mut app.input);
-
-                    if input.starts_with('/') {
-                        match handle_slash_command(
-                            &input,
-                            app,
-                            session_manager,
-                            session_data.as_mut(),
-                        ) {
-                            CommandResult::Continue => {}
-                            CommandResult::Exit => break,
-                        }
-                        continue;
+                if input.starts_with('/') {
+                    match handle_slash_command(
+                        &input,
+                        app,
+                        session_manager,
+                        session_data.as_mut(),
+                    ) {
+                        CommandResult::Continue => {}
+                        CommandResult::Exit => break,
                     }
+                    continue;
+                }
 
-                    app.add_message("user", &input);
+                app.add_message("user", &input);
 
-                    if let Some(log) = audit_log {
-                        let _ = log.user_prompt(&input);
-                    }
+                if let Some(log) = audit_log {
+                    let _ = log.user_prompt(&input);
+                }
 
-                    if let (Some(sm), Some(sd)) = (session_manager, session_data.as_mut()) {
-                        let _ = sm.add_entry(sd, "user", &input);
-                    }
+                if let (Some(sm), Some(sd)) = (session_manager, session_data.as_mut()) {
+                    let _ = sm.add_entry(sd, "user", &input);
+                }
 
-                    app.loading = true;
-                    terminal.draw(|frame| app.render(frame))?;
-
-                    match coordinator.run(&input).await {
-                        Ok(response) => {
-                            app.add_message("assistant", &response);
-                            if let (Some(sm), Some(sd)) = (session_manager, session_data.as_mut()) {
-                                let _ = sm.add_entry(sd, "assistant", &response);
-                            }
-                        }
-                        Err(e) => {
-                            app.add_message("error", &format!("Agent error: {e}"));
-                        }
-                    }
-                    app.loading = false;
-                }
-                KeyCode::Char(c) => {
-                    app.input.push(c);
-                }
-                KeyCode::Backspace => {
-                    app.input.pop();
-                }
-                KeyCode::Up => {
-                    app.scroll_up();
-                }
-                KeyCode::Down => {
-                    app.scroll_down();
-                }
-                KeyCode::PageUp => {
-                    app.scroll_offset = app.scroll_offset.saturating_add(20);
-                }
-                KeyCode::PageDown => {
-                    app.scroll_offset = app.scroll_offset.saturating_sub(20);
-                }
-                _ => {}
+                app.loading = true;
+                let prompt = input;
+                let coord = coordinator.clone();
+                agent_fut = Some(Box::pin(async move { coord.run(&prompt).await }));
             }
+            KeyCode::Char(c) => {
+                app.input.push(c);
+            }
+            KeyCode::Backspace => {
+                app.input.pop();
+            }
+            KeyCode::Up => {
+                app.scroll_up();
+            }
+            KeyCode::Down => {
+                app.scroll_down();
+            }
+            KeyCode::PageUp => {
+                app.scroll_offset = app.scroll_offset.saturating_add(20);
+            }
+            KeyCode::PageDown => {
+                app.scroll_offset = app.scroll_offset.saturating_sub(20);
+            }
+            _ => {}
         }
     }
 
@@ -331,7 +368,7 @@ Available commands:
                         for s in &sessions {
                             let id = &s.session_id;
                             let entries = s.entries.len();
-                            let updated = &s.updated_at[..19.min(s.updated_at.len())];
+                            let updated = s.updated_at.get(..19).unwrap_or(&s.updated_at);
                             out.push_str(&format!("  {id:<32}  {entries} entries  {updated}\n"));
                         }
                         app.add_message("system", &out);
@@ -356,7 +393,7 @@ Available commands:
                     let mut out = format!(
                         "Session: {}  (created {})\n---\n",
                         data.session_id,
-                        &data.created_at[..19.min(data.created_at.len())]
+                        data.created_at.get(..19).unwrap_or(&data.created_at)
                     );
                     for entry in &data.entries {
                         let prefix = match entry.role.as_str() {
@@ -429,10 +466,11 @@ Available commands:
             };
             // Don't allow deleting the current session
             if let Some(sd) = session_data
-                && sd.session_id == session_id {
-                    app.add_message("error", "Cannot delete the current session.");
-                    return CommandResult::Continue;
-                }
+                && sd.session_id == session_id
+            {
+                app.add_message("error", "Cannot delete the current session.");
+                return CommandResult::Continue;
+            }
             match sm.load(session_id) {
                 Ok(Some(_)) => {
                     let _ = sm.delete(session_id);

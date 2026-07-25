@@ -44,5 +44,6 @@ thiserror = "2"
 
 # TUI
 ratatui = "0.30"
-crossterm = "0.28"
+crossterm = { version = "0.28", features = ["event-stream"] }
 anyhow = "1.0.104"
+futures = "0.3"

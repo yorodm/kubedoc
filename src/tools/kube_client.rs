@@ -35,12 +35,9 @@ impl KubeClient {
         };
 
         let config = if let Some(path) = kubeconfig_path {
-            let kube_config = Kubeconfig::read_from(std::path::Path::new(path))
-                .map_err(|e| {
-                    KubeToolError::Other(format!(
-                        "Failed to read kubeconfig from {path}: {e}"
-                    ))
-                })?;
+            let kube_config = Kubeconfig::read_from(std::path::Path::new(path)).map_err(|e| {
+                KubeToolError::Other(format!("Failed to read kubeconfig from {path}: {e}"))
+            })?;
             Config::from_custom_kubeconfig(kube_config, &options)
                 .await
                 .map_err(|e| {
@@ -49,14 +46,12 @@ impl KubeClient {
                     ))
                 })?
         } else {
-            Config::from_kubeconfig(&options)
-                .await
-                .map_err(|e| {
-                    let ctx_display = context.as_deref().unwrap_or("(default)");
-                    KubeToolError::Other(format!(
-                        "Failed to load kubeconfig (context={ctx_display}): {e}"
-                    ))
-                })?
+            Config::from_kubeconfig(&options).await.map_err(|e| {
+                let ctx_display = context.as_deref().unwrap_or("(default)");
+                KubeToolError::Other(format!(
+                    "Failed to load kubeconfig (context={ctx_display}): {e}"
+                ))
+            })?
         };
 
         let server = config.cluster_url.clone();
@@ -119,7 +114,8 @@ pub fn pod_summary(pod: &Pod) -> String {
         .unwrap_or(0);
     let containers: Vec<String> = pod
         .spec
-        .as_ref().map(|s| s.containers.iter())
+        .as_ref()
+        .map(|s| s.containers.iter())
         .map(|c| c.map(|c| c.name.clone()).collect())
         .unwrap_or_default();
     format!(
@@ -261,7 +257,7 @@ impl Tool for ListNamespaces {
 
     async fn call(&self, _args: Self::Args) -> Result<Self::Output, Self::Error> {
         let api: Api<Namespace> = Api::all(self.client.clone());
-        let list = api.list(&ListParams::default()).await?;
+        let list = api.list(&ListParams::default().limit(500)).await?;
         let items: Vec<String> = list
             .items
             .iter()
@@ -310,7 +306,7 @@ impl Tool for GetNodes {
 
     async fn call(&self, _args: Self::Args) -> Result<Self::Output, Self::Error> {
         let api: Api<Node> = Api::all(self.client.clone());
-        let list = api.list(&ListParams::default()).await?;
+        let list = api.list(&ListParams::default().limit(500)).await?;
         let items: Vec<String> = list.items.iter().map(node_summary).collect();
         if items.is_empty() {
             Ok("No nodes found.".to_string())
@@ -358,7 +354,7 @@ impl Tool for GetPods {
             Some(ref ns) => Api::namespaced(self.client.clone(), ns),
             None => Api::all(self.client.clone()),
         };
-        let list = api.list(&ListParams::default()).await?;
+        let list = api.list(&ListParams::default().limit(500)).await?;
         let items: Vec<String> = list.items.iter().map(pod_summary).collect();
         if items.is_empty() {
             Ok("No pods found.".to_string())
@@ -402,7 +398,7 @@ impl Tool for GetEvents {
             Some(ref ns) => Api::namespaced(self.client.clone(), ns),
             None => Api::all(self.client.clone()),
         };
-        let list = api.list(&ListParams::default()).await?;
+        let list = api.list(&ListParams::default().limit(500)).await?;
         let items: Vec<String> = list.items.iter().map(event_summary).collect();
         if items.is_empty() {
             Ok("No events found.".to_string())
@@ -446,7 +442,7 @@ impl Tool for GetDeployments {
             Some(ref ns) => Api::namespaced(self.client.clone(), ns),
             None => Api::all(self.client.clone()),
         };
-        let list = api.list(&ListParams::default()).await?;
+        let list = api.list(&ListParams::default().limit(500)).await?;
         let items: Vec<String> = list.items.iter().map(deployment_summary).collect();
         if items.is_empty() {
             Ok("No deployments found.".to_string())
@@ -494,7 +490,7 @@ impl Tool for GetServices {
             Some(ref ns) => Api::namespaced(self.client.clone(), ns),
             None => Api::all(self.client.clone()),
         };
-        let list = api.list(&ListParams::default()).await?;
+        let list = api.list(&ListParams::default().limit(500)).await?;
         let items: Vec<String> = list.items.iter().map(service_summary).collect();
         if items.is_empty() {
             Ok("No services found.".to_string())
@@ -538,7 +534,7 @@ impl Tool for GetConfigMaps {
             Some(ref ns) => Api::namespaced(self.client.clone(), ns),
             None => Api::all(self.client.clone()),
         };
-        let list = api.list(&ListParams::default()).await?;
+        let list = api.list(&ListParams::default().limit(500)).await?;
         let items: Vec<String> = list.items.iter().map(configmap_summary).collect();
         if items.is_empty() {
             Ok("No configmaps found.".to_string())
