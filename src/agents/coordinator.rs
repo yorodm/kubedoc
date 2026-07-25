@@ -71,6 +71,7 @@ impl<M: CompletionModel + 'static> Coordinator<M> {
         let mut agent_builder = AgentBuilder::new(model)
             .preamble(COORDINATOR_PREAMBLE)
             .temperature(0.1)
+            .default_max_turns(5)
             .tool_server_handle(tool_handle);
 
         if let Some(log) = audit_log {

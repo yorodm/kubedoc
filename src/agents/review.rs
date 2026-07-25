@@ -53,6 +53,7 @@ pub fn build<M: CompletionModel + 'static>(
         .preamble(REVIEW_PREAMBLE)
         .temperature(0.0)
         .tool_server_handle(tool_handle)
+        .default_max_turns(10)
         .build();
     Ok(agent)
 }

@@ -29,10 +29,7 @@ Important rules:
 When the user asks you to save or write manifests to disk, use write_artifact.
 "#;
 
-pub fn build<M: CompletionModel + 'static>(
-    client: Client,
-    model: M,
-) -> anyhow::Result<Agent<M>> {
+pub fn build<M: CompletionModel + 'static>(client: Client, model: M) -> anyhow::Result<Agent<M>> {
     let agent = AgentBuilder::new(model)
         .name("artifacts")
         .description("Generate Kubernetes YAML manifests for deployments, services, configmaps, and other resources. Use this when the user wants to create or modify resources.")
@@ -48,6 +45,7 @@ pub fn build<M: CompletionModel + 'static>(
         .tool(file_tools::GenerateManifest)
         .tool(file_tools::ValidateManifest)
         .tool(file_tools::ListAvailableApiResources { client: client.clone() })
+        .default_max_turns(20)
         .build();
     Ok(agent)
 }
