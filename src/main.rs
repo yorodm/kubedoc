@@ -11,6 +11,7 @@ mod tui;
 
 use std::sync::Arc;
 
+use anyhow::Context;
 use clap::Parser;
 use cli::{Cli, Commands, ConfigAction, SessionsAction};
 use config::kubedoc_home;
@@ -27,7 +28,7 @@ struct RunContext {
 }
 
 impl RunContext {
-    fn new(data_dir: Option<&str>) -> Result<Self, Box<dyn std::error::Error>> {
+    fn new(data_dir: Option<&str>) -> anyhow::Result<Self> {
         let home = kubedoc_home(data_dir);
         let session_manager = session::SessionManager::new(Some(home.clone()))?;
         let session_data = session_manager.create();
@@ -52,7 +53,7 @@ async fn run_interactive_tui<M: CompletionModel + 'static>(
     model: M,
     kube_client: kube::Client,
     ctx: &mut RunContext,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> anyhow::Result<()> {
     let coordinator = agents::coordinator::Coordinator::new(
         kube_client,
         model,
@@ -107,12 +108,12 @@ macro_rules! dispatch_provider {
                 )
                 .await
             }
-            other => Err(format!("Unsupported provider: {other}").into()),
+            other => Err(anyhow::anyhow!("Unsupported provider: {other}")),
         }
     };
 }
 
-fn handle_audit(session_id: &str, data_dir: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+fn handle_audit(session_id: &str, data_dir: Option<&str>) -> anyhow::Result<()> {
     let path = kubedoc_home(data_dir)
         .join("audit")
         .join(format!("{session_id}.jsonl"));
@@ -152,7 +153,7 @@ fn handle_config(
     action: ConfigAction,
     data_dir: Option<&str>,
     config: &config::KubedocConfig,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> anyhow::Result<()> {
     match action {
         ConfigAction::Init => {
             let dir = kubedoc_home(data_dir);
@@ -217,14 +218,15 @@ async fn handle_mcp(
     transport: &str,
     _bind: &str,
     config: &config::KubedocConfig,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> anyhow::Result<()> {
     info!("Starting MCP server (transport={transport})");
 
     let kube_client = tools::kube_client::KubeClient::new(
         config.kube.kubeconfig_path.as_deref(),
         config.kube.context.clone(),
     )
-    .await?
+    .await
+    .context("Failed to connect to Kubernetes cluster for MCP server")?
     .into_client();
 
     let server = mcp::server::KubedocMcpServer::new(kube_client);
@@ -246,7 +248,7 @@ async fn handle_mcp(
 fn handle_sessions(
     action: SessionsAction,
     data_dir: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> anyhow::Result<()> {
     let sm = session::SessionManager::new(Some(kubedoc_home(data_dir)))?;
 
     match action {
@@ -305,12 +307,13 @@ async fn handle_interactive(
     config: &config::KubedocConfig,
     data_dir: Option<&str>,
     mcp_servers: Vec<config::McpServerConfig>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> anyhow::Result<()> {
     let kube_client = tools::kube_client::KubeClient::new(
         config.kube.kubeconfig_path.as_deref(),
         config.kube.context.clone(),
     )
-    .await?
+    .await
+    .context("Failed to connect to Kubernetes cluster — check your kubeconfig and cluster access")?
     .into_client();
 
     let mut ctx = RunContext::new(data_dir)?;
@@ -320,7 +323,7 @@ async fn handle_interactive(
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> anyhow::Result<()> {
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .expect("Failed to install rustls crypto provider");
@@ -328,7 +331,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     trace::init(cli.verbose);
 
-    let config = config::KubedocConfig::load(cli.config.as_deref(), &cli)?;
+    let config = config::KubedocConfig::load(cli.config.as_deref(), &cli)
+        .context("Failed to load configuration")?;
 
     match cli.command {
         Some(Commands::Audit { session_id }) => {
@@ -349,7 +353,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .as_ref()
                 .and_then(|m| m.servers.clone())
                 .unwrap_or_default();
-            handle_interactive(&config, cli.data_dir.as_deref(), mcp_servers).await?;
+            handle_interactive(&config, cli.data_dir.as_deref(), mcp_servers).await
+                .context("Interactive session failed")?;
         }
     }
 

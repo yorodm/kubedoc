@@ -48,7 +48,7 @@ impl<M: CompletionModel + 'static> Coordinator<M> {
         audit_log: Option<Arc<crate::audit::AuditLog>>,
         memory: Option<Arc<dyn rig_core::memory::ConversationMemory>>,
         conversation_id: Option<String>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    ) -> anyhow::Result<Self> {
         // Sub-agents have their own internal tool servers (K8s tools for diagnose,
         // file tools for artifacts, etc.) — they do NOT share the coordinator's handle.
         let diagnose = crate::agents::diagnose::build(client.clone(), model.clone())?;
@@ -87,7 +87,7 @@ impl<M: CompletionModel + 'static> Coordinator<M> {
         })
     }
 
-    pub async fn run(&self, prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
+    pub async fn run(&self, prompt: &str) -> anyhow::Result<String> {
         let response = self.agent.prompt(prompt).await?;
         Ok(response)
     }

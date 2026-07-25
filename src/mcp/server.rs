@@ -444,7 +444,7 @@ impl KubedocMcpServer {
         )]))
     }
 
-    pub async fn run(self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn run(self) -> anyhow::Result<()> {
         let service = self.serve(stdio()).await?;
         service.waiting().await?;
         Ok(())

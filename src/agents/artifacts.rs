@@ -32,7 +32,7 @@ When the user asks you to save or write manifests to disk, use write_artifact.
 pub fn build<M: CompletionModel + 'static>(
     client: Client,
     model: M,
-) -> Result<Agent<M>, Box<dyn std::error::Error>> {
+) -> anyhow::Result<Agent<M>> {
     let agent = AgentBuilder::new(model)
         .name("artifacts")
         .description("Generate Kubernetes YAML manifests for deployments, services, configmaps, and other resources. Use this when the user wants to create or modify resources.")

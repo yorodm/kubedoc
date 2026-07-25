@@ -30,23 +30,41 @@ impl KubeClient {
         context: Option<String>,
     ) -> Result<Self, KubeToolError> {
         let options = KubeConfigOptions {
-            context,
+            context: context.clone(),
             ..Default::default()
         };
 
         let config = if let Some(path) = kubeconfig_path {
             let kube_config = Kubeconfig::read_from(std::path::Path::new(path))
-                .map_err(KubeToolError::KubeconfigError)?;
+                .map_err(|e| {
+                    KubeToolError::Other(format!(
+                        "Failed to read kubeconfig from {path}: {e}"
+                    ))
+                })?;
             Config::from_custom_kubeconfig(kube_config, &options)
                 .await
-                .map_err(KubeToolError::KubeconfigError)?
+                .map_err(|e| {
+                    KubeToolError::Other(format!(
+                        "Failed to build config from kubeconfig at {path}: {e}"
+                    ))
+                })?
         } else {
             Config::from_kubeconfig(&options)
                 .await
-                .map_err(KubeToolError::KubeconfigError)?
+                .map_err(|e| {
+                    let ctx_display = context.as_deref().unwrap_or("(default)");
+                    KubeToolError::Other(format!(
+                        "Failed to load kubeconfig (context={ctx_display}): {e}"
+                    ))
+                })?
         };
 
-        let client = Client::try_from(config)?;
+        let server = config.cluster_url.clone();
+        let client = Client::try_from(config).map_err(|e| {
+            KubeToolError::Other(format!(
+                "Failed to create Kubernetes client for {server}: {e}"
+            ))
+        })?;
         Ok(Self { client })
     }
 

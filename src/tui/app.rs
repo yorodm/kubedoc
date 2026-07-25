@@ -155,7 +155,7 @@ pub async fn run<M: CompletionModel + 'static>(
     session_manager: Option<&crate::session::SessionManager>,
     mut session_data: Option<crate::session::SessionData>,
     audit_log: Option<Arc<crate::audit::AuditLog>>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> anyhow::Result<()> {
     let mut terminal = ratatui::try_init()?;
 
     if let Some(ref log) = audit_log {
@@ -197,7 +197,7 @@ async fn run_loop<M: CompletionModel + 'static>(
     session_manager: Option<&crate::session::SessionManager>,
     session_data: &mut Option<crate::session::SessionData>,
     audit_log: Option<&crate::audit::AuditLog>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> anyhow::Result<()> {
     loop {
         terminal.draw(|frame| app.render(frame))?;
 

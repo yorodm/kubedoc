@@ -30,7 +30,7 @@ impl AuditLog {
     pub fn new(
         session_id: &str,
         data_dir: Option<&str>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    ) -> anyhow::Result<Self> {
         let dir = crate::config::kubedoc_home(data_dir).join("audit");
 
         std::fs::create_dir_all(&dir)?;
@@ -51,7 +51,7 @@ impl AuditLog {
         args: Option<&str>,
         result_summary: Option<&str>,
         tokens: Option<u64>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> anyhow::Result<()> {
         let entry = AuditEntry {
             timestamp: chrono::Utc::now().to_rfc3339(),
             session_id: self.session_id.clone(),
@@ -73,24 +73,19 @@ impl AuditLog {
         Ok(())
     }
 
-    pub fn session_start(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn session_start(&self) -> anyhow::Result<()> {
         self.log_event("session_start", None, None, None, None, None)
     }
 
-    pub fn session_end(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn session_end(&self) -> anyhow::Result<()> {
         self.log_event("session_end", None, None, None, None, None)
     }
 
-    pub fn user_prompt(&self, prompt: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn user_prompt(&self, prompt: &str) -> anyhow::Result<()> {
         self.log_event("user_prompt", None, None, Some(prompt), None, None)
     }
 
-    pub fn tool_call(
-        &self,
-        agent: &str,
-        tool_name: &str,
-        args: &str,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn tool_call(&self, agent: &str, tool_name: &str, args: &str) -> anyhow::Result<()> {
         self.log_event(
             "tool_call",
             Some(agent),
@@ -101,12 +96,7 @@ impl AuditLog {
         )
     }
 
-    pub fn tool_result(
-        &self,
-        agent: &str,
-        tool_name: &str,
-        result_summary: &str,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn tool_result(&self, agent: &str, tool_name: &str, result_summary: &str) -> anyhow::Result<()> {
         self.log_event(
             "tool_result",
             Some(agent),
@@ -117,11 +107,7 @@ impl AuditLog {
         )
     }
 
-    pub fn agent_response(
-        &self,
-        agent: &str,
-        response: &str,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn agent_response(&self, agent: &str, response: &str) -> anyhow::Result<()> {
         self.log_event(
             "agent_response",
             Some(agent),
@@ -132,7 +118,7 @@ impl AuditLog {
         )
     }
 
-    pub fn agent_thinking(&self, agent: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn agent_thinking(&self, agent: &str) -> anyhow::Result<()> {
         self.log_event("agent_thinking", Some(agent), None, None, None, None)
     }
 }

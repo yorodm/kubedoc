@@ -46,7 +46,7 @@ Be concise and data-driven. Query metrics proactively when relevant.
 pub fn build<M: CompletionModel + 'static>(
     model: M,
     tool_handle: ToolServerHandle,
-) -> Result<Agent<M>, Box<dyn std::error::Error>> {
+) -> anyhow::Result<Agent<M>> {
     let agent = AgentBuilder::new(model)
         .name("review")
         .description("Analyze cluster performance, identify bottlenecks, and recommend improvements. Use this for performance-related questions.")

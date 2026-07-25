@@ -22,7 +22,7 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
-    pub fn new(data_dir: Option<std::path::PathBuf>) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(data_dir: Option<std::path::PathBuf>) -> anyhow::Result<Self> {
         let dir = data_dir
             .unwrap_or_else(|| {
                 dirs::home_dir()
@@ -51,7 +51,7 @@ impl SessionManager {
         }
     }
 
-    pub fn list(&self) -> Result<Vec<SessionData>, Box<dyn std::error::Error>> {
+    pub fn list(&self) -> anyhow::Result<Vec<SessionData>> {
         let mut sessions = Vec::new();
         for entry in std::fs::read_dir(&self.sessions_dir)? {
             let entry = entry?;
@@ -66,10 +66,7 @@ impl SessionManager {
         Ok(sessions)
     }
 
-    pub fn load(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<SessionData>, Box<dyn std::error::Error>> {
+    pub fn load(&self, session_id: &str) -> anyhow::Result<Option<SessionData>> {
         let path = self.session_path(session_id);
         if !path.exists() {
             return Ok(None);
@@ -78,19 +75,14 @@ impl SessionManager {
         Ok(Some(serde_json::from_str(&content)?))
     }
 
-    pub fn save(&self, data: &SessionData) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn save(&self, data: &SessionData) -> anyhow::Result<()> {
         let path = self.session_path(&data.session_id);
         let content = serde_json::to_string_pretty(data)?;
         std::fs::write(&path, content)?;
         Ok(())
     }
 
-    pub fn add_entry(
-        &self,
-        data: &mut SessionData,
-        role: &str,
-        content: &str,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn add_entry(&self, data: &mut SessionData, role: &str, content: &str) -> anyhow::Result<()> {
         data.entries.push(Entry {
             role: role.to_string(),
             content: content.to_string(),
@@ -99,7 +91,7 @@ impl SessionManager {
         self.save(data)
     }
 
-    pub fn delete(&self, session_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn delete(&self, session_id: &str) -> anyhow::Result<()> {
         let path = self.session_path(session_id);
         if path.exists() {
             std::fs::remove_file(&path)?;

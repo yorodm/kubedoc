@@ -58,7 +58,7 @@ impl KubedocConfig {
     pub fn load(
         config_path: Option<&str>,
         cli: &crate::cli::Cli,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    ) -> anyhow::Result<Self> {
         let path = config_path
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| kubedoc_home(cli.data_dir.as_deref()).join("config.toml"));

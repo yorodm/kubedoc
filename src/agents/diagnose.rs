@@ -32,7 +32,7 @@ Be thorough but concise. If you find no issues, state that clearly.
 pub fn build<M: CompletionModel + 'static>(
     client: Client,
     model: M,
-) -> Result<Agent<M>, Box<dyn std::error::Error>> {
+) -> anyhow::Result<Agent<M>> {
     let agent = AgentBuilder::new(model)
         .name("diagnose")
         .description("Inspect the cluster for issues, misconfigurations, and unhealthy resources. Use this for in-depth cluster health diagnosis.")
