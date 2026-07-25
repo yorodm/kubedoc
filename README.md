@@ -19,7 +19,27 @@ kubedoc is a CLI tool that uses an LLM-powered multi-agent architecture to inspe
 - Access to a Kubernetes cluster (via `~/.kube/config`)
 - An LLM API key (OpenAI, Anthropic, Groq, or a local Ollama instance)
 
+Or use Nix (see below) — no manual Rust or dependency setup required.
+
 ## Installation
+
+### Nix
+
+With [Nix](https://nixos.org/download/) installed:
+
+```bash
+# Enter the dev shell (provides Rust, cargo, and all build dependencies)
+nix develop
+
+# Or build the binary directly
+nix build
+./result/bin/kubedoc --version
+```
+
+The flake provides:
+- `nix develop` — drops you into a shell with Rust, cargo, clippy, rustfmt, and all build deps
+- `nix build` — builds the binary via crane, output at `./result/bin/kubedoc`
+- `nix run` — builds and runs in one step
 
 ### From source
 
@@ -196,7 +216,7 @@ Priority: CLI flags > env vars > config file > defaults.
 
 ## License
 
-TODO
+[MIT](LICENSE)
 
 ---
 
