@@ -41,6 +41,9 @@ rmcp = { version = "1.7", features = ["client", "server", "transport-child-proce
 serde_yaml = "0.9"
 thiserror = "2"
 
+# TLS (explicit crypto provider for rustls — auto-detection fails in Nix sandbox)
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+
 # TUI
 ratatui = "0.30"
 crossterm = "0.28"
