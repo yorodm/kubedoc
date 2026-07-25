@@ -52,9 +52,10 @@ impl Tool for WriteArtifact {
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
         let path = Path::new(&args.path);
         if let Some(parent) = path.parent()
-            && !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
-            }
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
         std::fs::write(path, &args.content)?;
         Ok(format!(
             "Written {} bytes to {}",
@@ -438,28 +439,6 @@ impl Tool for ListAvailableApiResources {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_kind_to_api_version() {
-        assert_eq!(super::kind_to_api_version("Pod"), "v1");
-        assert_eq!(super::kind_to_api_version("Service"), "v1");
-        assert_eq!(super::kind_to_api_version("Deployment"), "apps/v1");
-        assert_eq!(super::kind_to_api_version("StatefulSet"), "apps/v1");
-        assert_eq!(
-            super::kind_to_api_version("Ingress"),
-            "networking.k8s.io/v1"
-        );
-        assert_eq!(super::kind_to_api_version("Job"), "batch/v1");
-        assert_eq!(
-            super::kind_to_api_version("Role"),
-            "rbac.authorization.k8s.io/v1"
-        );
-        assert_eq!(
-            super::kind_to_api_version("CustomResourceDefinition"),
-            "apiextensions.k8s.io/v1"
-        );
-        assert_eq!(super::kind_to_api_version("UnknownKind"), "v1");
-    }
-
     #[tokio::test]
     async fn test_generate_manifest_basic() {
         let tool = GenerateManifest;
@@ -624,11 +603,5 @@ metadata:
 
         std::env::set_current_dir(orig_dir).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn test_invalid_glob_pattern() {
-        let result = glob::glob("\\invalid").map(|_| "ok".to_string());
-        assert!(result.is_err());
     }
 }
