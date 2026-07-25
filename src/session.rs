@@ -41,7 +41,7 @@ impl SessionManager {
 
     pub fn create(&self) -> SessionData {
         let now = Local::now();
-        let id = now.format("session_%Y-%m-%d_%H%M%S").to_string();
+        let id = now.format("session_%Y-%m-%d_%H%M%S%.f").to_string();
         let ts = now.to_rfc3339();
         SessionData {
             session_id: id,
