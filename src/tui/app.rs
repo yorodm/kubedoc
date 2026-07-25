@@ -428,12 +428,11 @@ Available commands:
                 return CommandResult::Continue;
             };
             // Don't allow deleting the current session
-            if let Some(sd) = session_data {
-                if sd.session_id == session_id {
+            if let Some(sd) = session_data
+                && sd.session_id == session_id {
                     app.add_message("error", "Cannot delete the current session.");
                     return CommandResult::Continue;
                 }
-            }
             match sm.load(session_id) {
                 Ok(Some(_)) => {
                     let _ = sm.delete(session_id);

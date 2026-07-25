@@ -56,13 +56,11 @@ impl SessionManager {
         for entry in std::fs::read_dir(&self.sessions_dir)? {
             let entry = entry?;
             let path = entry.path();
-            if path.extension().map_or(false, |e| e == "json") {
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    if let Ok(data) = serde_json::from_str::<SessionData>(&content) {
+            if path.extension().is_some_and(|e| e == "json")
+                && let Ok(content) = std::fs::read_to_string(&path)
+                    && let Ok(data) = serde_json::from_str::<SessionData>(&content) {
                         sessions.push(data);
                     }
-                }
-            }
         }
         sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(sessions)

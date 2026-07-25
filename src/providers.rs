@@ -14,11 +14,10 @@ pub fn openai_completion(
 
     let mut builder = rig_core::providers::openai::CompletionsClient::builder().api_key(&api_key);
 
-    if let Some(ref base_url) = config.llm.base_url {
-        if !base_url.is_empty() {
+    if let Some(ref base_url) = config.llm.base_url
+        && !base_url.is_empty() {
             builder = builder.base_url(base_url);
         }
-    }
 
     let client = builder.build()?;
     Ok(client.completion_model(&config.llm.model))
@@ -37,11 +36,10 @@ pub fn anthropic_completion(
 
     let mut builder = rig_core::providers::anthropic::Client::builder().api_key(api_key);
 
-    if let Some(ref base_url) = config.llm.base_url {
-        if !base_url.is_empty() {
+    if let Some(ref base_url) = config.llm.base_url
+        && !base_url.is_empty() {
             builder = builder.base_url(base_url);
         }
-    }
 
     let client = builder.build()?;
     Ok(client.completion_model(&config.llm.model))
@@ -55,11 +53,10 @@ pub fn groq_completion(
 
     let mut builder = rig_core::providers::groq::Client::builder().api_key(&api_key);
 
-    if let Some(ref base_url) = config.llm.base_url {
-        if !base_url.is_empty() {
+    if let Some(ref base_url) = config.llm.base_url
+        && !base_url.is_empty() {
             builder = builder.base_url(base_url);
         }
-    }
 
     let client = builder.build()?;
     Ok(client.completion_model(&config.llm.model))
@@ -70,11 +67,10 @@ pub fn ollama_completion(
 ) -> Result<rig_core::providers::ollama::CompletionModel, Box<dyn std::error::Error>> {
     let mut builder = rig_core::providers::ollama::Client::builder().api_key(Nothing);
 
-    if let Some(ref base_url) = config.llm.base_url {
-        if !base_url.is_empty() {
+    if let Some(ref base_url) = config.llm.base_url
+        && !base_url.is_empty() {
             builder = builder.base_url(base_url);
         }
-    }
 
     let client = builder.build()?;
     Ok(client.completion_model(&config.llm.model))

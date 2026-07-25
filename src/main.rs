@@ -14,94 +14,157 @@ use std::sync::Arc;
 use clap::Parser;
 use cli::{Cli, Commands, ConfigAction, SessionsAction};
 use config::kubedoc_home;
-use kube::Client;
 use rig_core::{completion::CompletionModel, memory::InMemoryConversationMemory};
 use tracing::info;
 
+struct RunContext {
+    session_manager: session::SessionManager,
+    session_data: session::SessionData,
+    conversation_id: String,
+    memory: Arc<InMemoryConversationMemory>,
+    audit_log: Arc<audit::AuditLog>,
+    mcp_servers: Vec<config::McpServerConfig>,
+}
+
+impl RunContext {
+    fn new(data_dir: Option<&str>) -> Result<Self, Box<dyn std::error::Error>> {
+        let home = kubedoc_home(data_dir);
+        let session_manager = session::SessionManager::new(Some(home.clone()))?;
+        let session_data = session_manager.create();
+        let conversation_id = session_data.session_id.clone();
+        let memory = Arc::new(InMemoryConversationMemory::new());
+        let audit_log = Arc::new(audit::AuditLog::new(
+            &conversation_id,
+            Some(&home.to_string_lossy()),
+        )?);
+        Ok(Self {
+            session_manager,
+            session_data,
+            conversation_id,
+            memory,
+            audit_log,
+            mcp_servers: Vec::new(),
+        })
+    }
+}
+
 async fn run_interactive_tui<M: CompletionModel + 'static>(
     model: M,
-    kube_client: Client,
-    mcp_servers: Vec<config::McpServerConfig>,
-    audit_log: Option<Arc<crate::audit::AuditLog>>,
-    memory: &Arc<InMemoryConversationMemory>,
-    conversation_id: &str,
-    session_manager: &session::SessionManager,
-    session_data: &session::SessionData,
+    kube_client: kube::Client,
+    ctx: &mut RunContext,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let coordinator = agents::coordinator::Coordinator::new(
         kube_client,
         model,
-        mcp_servers,
-        audit_log.clone(),
-        Some(memory.clone() as Arc<dyn rig_core::memory::ConversationMemory>),
-        Some(conversation_id.to_string()),
+        ctx.mcp_servers.clone(),
+        Some(ctx.audit_log.clone()),
+        Some(ctx.memory.clone() as Arc<dyn rig_core::memory::ConversationMemory>),
+        Some(ctx.conversation_id.clone()),
     )
     .await?;
     tui::run(
         coordinator,
-        conversation_id,
-        Some(session_manager),
-        Some(session_data.clone()),
-        audit_log,
+        &ctx.conversation_id,
+        Some(&ctx.session_manager),
+        Some(ctx.session_data.clone()),
+        Some(ctx.audit_log.clone()),
     )
     .await
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cli = Cli::parse();
-
-    trace::init(cli.verbose);
-
-    let config = config::KubedocConfig::load(cli.config.as_deref(), &cli)?;
-
-    match cli.command {
-        Some(Commands::Audit { session_id }) => {
-            let audit_path = kubedoc_home(cli.data_dir.as_deref()).join("audit");
-
-            let path = audit_path.join(format!("{}.jsonl", session_id));
-            if !path.exists() {
-                eprintln!("No audit log found for session: {}", session_id);
-                std::process::exit(1);
+macro_rules! dispatch_provider {
+    ($config:expr, $kube:expr, $ctx:expr, $provider:expr) => {
+        match $provider.as_str() {
+            "openai" => {
+                run_interactive_tui(
+                    providers::openai_completion($config)?,
+                    $kube.clone(),
+                    $ctx,
+                )
+                .await
             }
-
-            let content = std::fs::read_to_string(&path)?;
-            for line in content.lines() {
-                if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
-                    println!(
-                        "[{timestamp}] {event_type} {agent}{tool}{detail}",
-                        timestamp = entry["timestamp"].as_str().unwrap_or("?"),
-                        event_type = entry["event_type"].as_str().unwrap_or("?"),
-                        agent = entry["agent"]
-                            .as_str()
-                            .map(|a| format!(" agent={}", a))
-                            .unwrap_or_default(),
-                        tool = entry["tool_name"]
-                            .as_str()
-                            .map(|t| format!(" tool={}", t))
-                            .unwrap_or_default(),
-                        detail = entry["result_summary"]
-                            .as_str()
-                            .or_else(|| entry["args"].as_str())
-                            .map(|d| format!(" {}", d))
-                            .unwrap_or_default(),
-                    );
-                }
+            "anthropic" => {
+                run_interactive_tui(
+                    providers::anthropic_completion($config)?,
+                    $kube.clone(),
+                    $ctx,
+                )
+                .await
             }
+            "groq" => {
+                run_interactive_tui(
+                    providers::groq_completion($config)?,
+                    $kube.clone(),
+                    $ctx,
+                )
+                .await
+            }
+            "ollama" => {
+                run_interactive_tui(
+                    providers::ollama_completion($config)?,
+                    $kube.clone(),
+                    $ctx,
+                )
+                .await
+            }
+            other => Err(format!("Unsupported provider: {other}").into()),
         }
+    };
+}
 
-        Some(Commands::Config { action }) => match action {
-            ConfigAction::Init => {
-                let dir = kubedoc_home(cli.data_dir.as_deref());
-                std::fs::create_dir_all(&dir)?;
+fn handle_audit(session_id: &str, data_dir: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    let path = kubedoc_home(data_dir)
+        .join("audit")
+        .join(format!("{session_id}.jsonl"));
 
-                let path = dir.join("config.toml");
-                if path.exists() {
-                    println!("Config already exists at: {}", path.display());
-                } else {
-                    std::fs::write(
-                        &path,
-                        r#"# kubedoc configuration file
+    if !path.exists() {
+        eprintln!("No audit log found for session: {session_id}");
+        std::process::exit(1);
+    }
+
+    let content = std::fs::read_to_string(&path)?;
+    for line in content.lines() {
+        if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
+            println!(
+                "[{timestamp}] {event_type} {agent}{tool}{detail}",
+                timestamp = entry["timestamp"].as_str().unwrap_or("?"),
+                event_type = entry["event_type"].as_str().unwrap_or("?"),
+                agent = entry["agent"]
+                    .as_str()
+                    .map(|a| format!(" agent={a}"))
+                    .unwrap_or_default(),
+                tool = entry["tool_name"]
+                    .as_str()
+                    .map(|t| format!(" tool={t}"))
+                    .unwrap_or_default(),
+                detail = entry["result_summary"]
+                    .as_str()
+                    .or_else(|| entry["args"].as_str())
+                    .map(|d| format!(" {d}"))
+                    .unwrap_or_default(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn handle_config(
+    action: ConfigAction,
+    data_dir: Option<&str>,
+    config: &config::KubedocConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match action {
+        ConfigAction::Init => {
+            let dir = kubedoc_home(data_dir);
+            std::fs::create_dir_all(&dir)?;
+
+            let path = dir.join("config.toml");
+            if path.exists() {
+                println!("Config already exists at: {}", path.display());
+            } else {
+                std::fs::write(
+                    &path,
+                    r#"# kubedoc configuration file
 
 [llm]
 provider = "openai"              # openai | anthropic | groq | ollama
@@ -117,202 +180,172 @@ api_key_env = "OPENAI_API_KEY"   # env var holding the API key
 # name = "prometheus"
 # command = ["prometheus-mcp-server"]
 "#,
-                    )?;
-                    println!("Config template written to: {}", path.display());
+                )?;
+                println!("Config template written to: {}", path.display());
+            }
+        }
+        ConfigAction::Show => {
+            println!("Resolved configuration (secrets redacted):");
+            println!("  LLM provider: {}", config.llm.provider);
+            println!("  LLM model:    {}", config.llm.model);
+            println!(
+                "  Kubeconfig:   {}",
+                config
+                    .kube
+                    .kubeconfig_path
+                    .as_deref()
+                    .unwrap_or("~/.kube/config (default)")
+            );
+            println!(
+                "  Context:      {}",
+                config
+                    .kube
+                    .context
+                    .as_deref()
+                    .unwrap_or("(current-context from kubeconfig)")
+            );
+            println!(
+                "  Audit dir:    {}/audit",
+                kubedoc_home(data_dir).display()
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn handle_mcp(
+    transport: &str,
+    _bind: &str,
+    config: &config::KubedocConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    info!("Starting MCP server (transport={transport})");
+
+    let kube_client = tools::kube_client::KubeClient::new(
+        config.kube.kubeconfig_path.as_deref(),
+        config.kube.context.clone(),
+    )
+    .await?
+    .into_client();
+
+    let server = mcp::server::KubedocMcpServer::new(kube_client);
+
+    match transport {
+        "stdio" => server.run().await?,
+        "tcp" => {
+            eprintln!("TCP transport not yet implemented; use 'stdio'");
+            std::process::exit(1);
+        }
+        other => {
+            eprintln!("Unsupported transport: {other} (use 'stdio' or 'tcp')");
+            std::process::exit(1);
+        }
+    }
+    Ok(())
+}
+
+fn handle_sessions(
+    action: SessionsAction,
+    data_dir: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let sm = session::SessionManager::new(Some(kubedoc_home(data_dir)))?;
+
+    match action {
+        SessionsAction::List => {
+            let sessions = sm.list()?;
+            if sessions.is_empty() {
+                println!("No saved sessions.");
+            } else {
+                for s in &sessions {
+                    println!(
+                        "{id:<32}  {entries} entries  {updated}",
+                        id = s.session_id,
+                        entries = s.entries.len(),
+                        updated = &s.updated_at[..19],
+                    );
                 }
             }
-
-            ConfigAction::Show => {
-                println!("Resolved configuration (secrets redacted):");
-                println!("  LLM provider: {}", config.llm.provider);
-                println!("  LLM model:    {}", config.llm.model);
+        }
+        SessionsAction::Show { session_id } => match sm.load(&session_id)? {
+            None => {
+                eprintln!("Session not found: {session_id}");
+                std::process::exit(1);
+            }
+            Some(data) => {
                 println!(
-                    "  Kubeconfig:   {}",
-                    config
-                        .kube
-                        .kubeconfig_path
-                        .as_deref()
-                        .unwrap_or("~/.kube/config (default)")
+                    "Session: {}  (created {})",
+                    data.session_id,
+                    &data.created_at[..19]
                 );
-                println!(
-                    "  Context:      {}",
-                    config
-                        .kube
-                        .context
-                        .as_deref()
-                        .unwrap_or("(current-context from kubeconfig)")
-                );
-                println!(
-                    "  Audit dir:    {}/audit",
-                    kubedoc_home(cli.data_dir.as_deref()).display()
-                );
+                println!("---");
+                for entry in &data.entries {
+                    let prefix = match entry.role.as_str() {
+                        "user" => "You",
+                        "assistant" => "Agent",
+                        other => other,
+                    };
+                    println!("[{prefix}]\n{}\n", entry.content);
+                }
             }
         },
+        SessionsAction::Delete { session_id } => match sm.load(&session_id)? {
+            None => {
+                eprintln!("Session not found: {session_id}");
+                std::process::exit(1);
+            }
+            Some(_) => {
+                sm.delete(&session_id)?;
+                println!("Deleted session: {session_id}");
+            }
+        },
+    }
+    Ok(())
+}
 
+async fn handle_interactive(
+    config: &config::KubedocConfig,
+    data_dir: Option<&str>,
+    mcp_servers: Vec<config::McpServerConfig>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let kube_client = tools::kube_client::KubeClient::new(
+        config.kube.kubeconfig_path.as_deref(),
+        config.kube.context.clone(),
+    )
+    .await?
+    .into_client();
+
+    let mut ctx = RunContext::new(data_dir)?;
+    ctx.mcp_servers = mcp_servers;
+
+    dispatch_provider!(config, kube_client, &mut ctx, &config.llm.provider)
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let cli = Cli::parse();
+    trace::init(cli.verbose);
+
+    let config = config::KubedocConfig::load(cli.config.as_deref(), &cli)?;
+
+    match cli.command {
+        Some(Commands::Audit { session_id }) => {
+            handle_audit(&session_id, cli.data_dir.as_deref())?;
+        }
+        Some(Commands::Config { action }) => {
+            handle_config(action, cli.data_dir.as_deref(), &config)?;
+        }
         Some(Commands::Mcp { transport, bind }) => {
-            info!(
-                "Starting MCP server (transport={}, bind={})",
-                transport, bind
-            );
-            let kube_client = tools::kube_client::KubeClient::new(
-                config.kube.kubeconfig_path.as_deref(),
-                config.kube.context.clone(),
-            )
-            .await?
-            .into_client();
-
-            let server = mcp::server::KubedocMcpServer::new(kube_client);
-
-            match transport.as_str() {
-                "stdio" => {
-                    server.run().await?;
-                }
-                "tcp" => {
-                    eprintln!("TCP transport not yet implemented; use 'stdio'");
-                    std::process::exit(1);
-                }
-                other => {
-                    eprintln!("Unsupported transport: {other} (use 'stdio' or 'tcp')");
-                    std::process::exit(1);
-                }
-            }
+            handle_mcp(&transport, &bind, &config).await?;
         }
-
         Some(Commands::Sessions { action }) => {
-            let session_manager =
-                session::SessionManager::new(Some(kubedoc_home(cli.data_dir.as_deref())))?;
-            match action {
-                SessionsAction::List => {
-                    let sessions = session_manager.list()?;
-                    if sessions.is_empty() {
-                        println!("No saved sessions.");
-                    } else {
-                        for s in &sessions {
-                            println!(
-                                "{id:<32}  {entries} entries  {updated}",
-                                id = s.session_id,
-                                entries = s.entries.len(),
-                                updated = &s.updated_at[..19],
-                            );
-                        }
-                    }
-                }
-                SessionsAction::Show { session_id } => match session_manager.load(&session_id)? {
-                    None => {
-                        eprintln!("Session not found: {}", session_id);
-                        std::process::exit(1);
-                    }
-                    Some(data) => {
-                        println!(
-                            "Session: {}  (created {})",
-                            data.session_id,
-                            &data.created_at[..19]
-                        );
-                        println!("---");
-                        for entry in &data.entries {
-                            let prefix = match entry.role.as_str() {
-                                "user" => "You",
-                                "assistant" => "Agent",
-                                other => other,
-                            };
-                            println!("[{}]\n{}\n", prefix, entry.content);
-                        }
-                    }
-                },
-                SessionsAction::Delete { session_id } => {
-                    match session_manager.load(&session_id)? {
-                        None => {
-                            eprintln!("Session not found: {}", session_id);
-                            std::process::exit(1);
-                        }
-                        Some(_) => {
-                            session_manager.delete(&session_id)?;
-                            println!("Deleted session: {}", session_id);
-                        }
-                    }
-                }
-            }
+            handle_sessions(action, cli.data_dir.as_deref())?;
         }
-
         None => {
-            let kube_client = tools::kube_client::KubeClient::new(
-                config.kube.kubeconfig_path.as_deref(),
-                config.kube.context.clone(),
-            )
-            .await?
-            .into_client();
-
             let mcp_servers = config
                 .mcp
                 .as_ref()
                 .and_then(|m| m.servers.clone())
                 .unwrap_or_default();
-
-            let session_manager =
-                session::SessionManager::new(Some(kubedoc_home(cli.data_dir.as_deref())))?;
-            let session_data = session_manager.create();
-            let conversation_id = session_data.session_id.clone();
-            let memory = Arc::new(InMemoryConversationMemory::new());
-            let audit_log = Arc::new(crate::audit::AuditLog::new(
-                &conversation_id,
-                Some(&kubedoc_home(cli.data_dir.as_deref()).to_string_lossy()),
-            )?);
-
-            match config.llm.provider.as_str() {
-                "openai" => {
-                    run_interactive_tui(
-                        providers::openai_completion(&config)?,
-                        kube_client.clone(),
-                        mcp_servers.clone(),
-                        Some(audit_log.clone()),
-                        &memory,
-                        &conversation_id,
-                        &session_manager,
-                        &session_data,
-                    )
-                    .await?
-                }
-                "anthropic" => {
-                    run_interactive_tui(
-                        providers::anthropic_completion(&config)?,
-                        kube_client.clone(),
-                        mcp_servers.clone(),
-                        Some(audit_log.clone()),
-                        &memory,
-                        &conversation_id,
-                        &session_manager,
-                        &session_data,
-                    )
-                    .await?
-                }
-                "groq" => {
-                    run_interactive_tui(
-                        providers::groq_completion(&config)?,
-                        kube_client.clone(),
-                        mcp_servers.clone(),
-                        Some(audit_log.clone()),
-                        &memory,
-                        &conversation_id,
-                        &session_manager,
-                        &session_data,
-                    )
-                    .await?
-                }
-                "ollama" => {
-                    run_interactive_tui(
-                        providers::ollama_completion(&config)?,
-                        kube_client.clone(),
-                        mcp_servers.clone(),
-                        Some(audit_log.clone()),
-                        &memory,
-                        &conversation_id,
-                        &session_manager,
-                        &session_data,
-                    )
-                    .await?
-                }
-                other => return Err(format!("Unsupported provider: {other}").into()),
-            }
+            handle_interactive(&config, cli.data_dir.as_deref(), mcp_servers).await?;
         }
     }
 

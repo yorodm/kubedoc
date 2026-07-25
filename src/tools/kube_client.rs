@@ -101,8 +101,7 @@ pub fn pod_summary(pod: &Pod) -> String {
         .unwrap_or(0);
     let containers: Vec<String> = pod
         .spec
-        .as_ref()
-        .and_then(|s| Some(s.containers.iter()))
+        .as_ref().map(|s| s.containers.iter())
         .map(|c| c.map(|c| c.name.clone()).collect())
         .unwrap_or_default();
     format!(

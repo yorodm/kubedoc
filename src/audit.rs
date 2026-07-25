@@ -208,8 +208,8 @@ impl<M: CompletionModel + 'static> AgentHook<M> for AuditHook {
                     }
                 }
                 let total = usage.total_tokens;
-                if total > 0 {
-                    if let Err(e) = log.log_event(
+                if total > 0
+                    && let Err(e) = log.log_event(
                         "model_turn",
                         Some("coordinator"),
                         None,
@@ -219,7 +219,6 @@ impl<M: CompletionModel + 'static> AgentHook<M> for AuditHook {
                     ) {
                         tracing::warn!("audit: model_turn failed: {e}");
                     }
-                }
             }
             _ => {}
         }

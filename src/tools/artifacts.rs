@@ -51,11 +51,10 @@ impl Tool for WriteArtifact {
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
         let path = Path::new(&args.path);
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent)?;
             }
-        }
         std::fs::write(path, &args.content)?;
         Ok(format!(
             "Written {} bytes to {}",
@@ -344,17 +343,17 @@ impl Tool for ValidateManifest {
             }
         };
 
-        if !mapping.contains_key(&serde_yaml::Value::String("apiVersion".into())) {
+        if !mapping.contains_key(serde_yaml::Value::String("apiVersion".into())) {
             issues.push("Missing required field: apiVersion".into());
         }
-        if !mapping.contains_key(&serde_yaml::Value::String("kind".into())) {
+        if !mapping.contains_key(serde_yaml::Value::String("kind".into())) {
             issues.push("Missing required field: kind".into());
         }
 
-        let metadata = mapping.get(&serde_yaml::Value::String("metadata".into()));
+        let metadata = mapping.get(serde_yaml::Value::String("metadata".into()));
         match metadata {
             Some(serde_yaml::Value::Mapping(m)) => {
-                if !m.contains_key(&serde_yaml::Value::String("name".into())) {
+                if !m.contains_key(serde_yaml::Value::String("name".into())) {
                     issues.push("Missing required field: metadata.name".into());
                 }
             }

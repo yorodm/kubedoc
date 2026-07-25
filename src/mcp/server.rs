@@ -228,7 +228,7 @@ impl KubedocMcpServer {
                 let items: Vec<String> = list
                     .items
                     .iter()
-                    .map(|n| kube_client::node_summary(n))
+                    .map(kube_client::node_summary)
                     .collect();
                 if items.is_empty() {
                     "No nodes found.".to_string()
@@ -246,7 +246,7 @@ impl KubedocMcpServer {
                 let items: Vec<String> = list
                     .items
                     .iter()
-                    .map(|p| kube_client::pod_summary(p))
+                    .map(kube_client::pod_summary)
                     .collect();
                 if items.is_empty() {
                     "No pods found.".to_string()
@@ -264,7 +264,7 @@ impl KubedocMcpServer {
                 let items: Vec<String> = list
                     .items
                     .iter()
-                    .map(|e| kube_client::event_summary(e))
+                    .map(kube_client::event_summary)
                     .collect();
                 if items.is_empty() {
                     "No events found.".to_string()
@@ -282,7 +282,7 @@ impl KubedocMcpServer {
                 let items: Vec<String> = list
                     .items
                     .iter()
-                    .map(|d| kube_client::deployment_summary(d))
+                    .map(kube_client::deployment_summary)
                     .collect();
                 if items.is_empty() {
                     "No deployments found.".to_string()
@@ -300,7 +300,7 @@ impl KubedocMcpServer {
                 let items: Vec<String> = list
                     .items
                     .iter()
-                    .map(|s| kube_client::service_summary(s))
+                    .map(kube_client::service_summary)
                     .collect();
                 if items.is_empty() {
                     "No services found.".to_string()
@@ -318,7 +318,7 @@ impl KubedocMcpServer {
                 let items: Vec<String> = list
                     .items
                     .iter()
-                    .map(|c| kube_client::configmap_summary(c))
+                    .map(kube_client::configmap_summary)
                     .collect();
                 if items.is_empty() {
                     "No configmaps found.".to_string()
@@ -381,8 +381,8 @@ impl KubedocMcpServer {
                 let path = extract_req(&mut args, "path")?;
                 let content = extract_req(&mut args, "content")?;
                 let p = std::path::Path::new(&path);
-                if let Some(parent) = p.parent() {
-                    if !parent.as_os_str().is_empty() {
+                if let Some(parent) = p.parent()
+                    && !parent.as_os_str().is_empty() {
                         std::fs::create_dir_all(parent).map_err(|e| {
                             ErrorData::new(
                                 ErrorCode::INTERNAL_ERROR,
@@ -391,7 +391,6 @@ impl KubedocMcpServer {
                             )
                         })?;
                     }
-                }
                 std::fs::write(p, &content).map_err(|e| {
                     ErrorData::new(
                         ErrorCode::INTERNAL_ERROR,
