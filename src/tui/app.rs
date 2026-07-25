@@ -40,8 +40,8 @@ pub struct App {
     input: String,
     scroll_offset: usize,
     loading: bool,
-    auto_scroll: bool,
     flash_deadline: Option<Instant>,
+    viewport_height: usize,
 }
 
 impl App {
@@ -51,8 +51,8 @@ impl App {
             input: String::new(),
             scroll_offset: 0,
             loading: false,
-            auto_scroll: true,
             flash_deadline: None,
+            viewport_height: 20,
         }
     }
 
@@ -64,9 +64,22 @@ impl App {
         if self.messages.len() > MAX_VISIBLE_MESSAGES {
             self.messages.pop_front();
         }
-        if self.auto_scroll {
+        if self.is_at_bottom() {
             self.scroll_offset = usize::MAX;
         }
+    }
+
+    fn is_at_bottom(&self) -> bool {
+        let total_lines: usize = self
+            .messages
+            .iter()
+            .map(|m| match m.role {
+                MessageRole::Step { .. } | MessageRole::StepResult { .. } => 3,
+                _ => 2 + m.content.lines().count(),
+            })
+            .sum();
+        let max_scroll = total_lines.saturating_sub(self.viewport_height);
+        self.scroll_offset >= max_scroll
     }
 
     fn drain_progress(&mut self, rx: &mut mpsc::UnboundedReceiver<ProgressEvent>) {
@@ -127,7 +140,7 @@ impl App {
         }
     }
 
-    fn render(&self, frame: &mut ratatui::Frame) {
+    fn render(&mut self, frame: &mut ratatui::Frame) {
         let area = frame.area();
 
         let chunks = Layout::vertical([
@@ -139,6 +152,7 @@ impl App {
         let header_area = chunks[0];
         let messages_area = chunks[1];
         let input_area = chunks[2];
+        self.viewport_height = messages_area.height as usize;
 
         let header = Span::styled(
             " kubedoc — Interactive Session  |  /help commands  |  Ctrl+D quit  |  Ctrl+L clear",
@@ -258,12 +272,10 @@ impl App {
 
     fn scroll_up(&mut self) {
         self.scroll_offset = self.scroll_offset.saturating_sub(3);
-        self.auto_scroll = false;
     }
 
     fn scroll_down(&mut self) {
         self.scroll_offset = self.scroll_offset.saturating_add(3);
-        self.auto_scroll = false;
     }
 }
 
@@ -365,11 +377,9 @@ async fn run_loop<M: CompletionModel + Clone + 'static>(
                                     KeyCode::Down | KeyCode::Char('j') => app.scroll_down(),
                                     KeyCode::PageUp => {
                                         app.scroll_offset = app.scroll_offset.saturating_sub(20);
-                                        app.auto_scroll = false;
                                     }
                                     KeyCode::PageDown => {
                                         app.scroll_offset = app.scroll_offset.saturating_add(20);
-                                        app.auto_scroll = false;
                                     }
                                     _ => {}
                                 }
@@ -456,7 +466,6 @@ async fn run_loop<M: CompletionModel + Clone + 'static>(
                 }
 
                 app.loading = true;
-                app.auto_scroll = true;
                 let prompt = input;
                 let coord = coordinator.clone();
                 agent_fut = Some(Box::pin(async move { coord.run(&prompt).await }));
@@ -465,11 +474,9 @@ async fn run_loop<M: CompletionModel + Clone + 'static>(
             KeyCode::Down => app.scroll_down(),
             KeyCode::PageUp => {
                 app.scroll_offset = app.scroll_offset.saturating_sub(20);
-                app.auto_scroll = false;
             }
             KeyCode::PageDown => {
                 app.scroll_offset = app.scroll_offset.saturating_add(20);
-                app.auto_scroll = false;
             }
             KeyCode::Char(c) => {
                 app.input.push(c);
