@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use rig_core::{
     agent::{Agent, AgentBuilder},
     completion::CompletionModel,
@@ -5,6 +7,7 @@ use rig_core::{
 };
 use tokio::sync::mpsc;
 
+use crate::audit::{AuditHook, AuditLog};
 use crate::tui::progress::{ProgressEvent, ProgressHook};
 
 const REVIEW_PREAMBLE: &str = r#"
@@ -50,6 +53,7 @@ pub fn build<M: CompletionModel + 'static>(
     model: M,
     tool_handle: ToolServerHandle,
     progress_tx: Option<mpsc::UnboundedSender<ProgressEvent>>,
+    audit_log: Option<Arc<AuditLog>>,
 ) -> anyhow::Result<Agent<M>> {
     let mut builder = AgentBuilder::new(model)
         .name("review")
@@ -58,6 +62,10 @@ pub fn build<M: CompletionModel + 'static>(
         .temperature(0.0)
         .tool_server_handle(tool_handle)
         .default_max_turns(10);
+
+    if let Some(log) = audit_log {
+        builder = builder.add_hook(AuditHook::new(log));
+    }
 
     if let Some(tx) = progress_tx {
         builder = builder.add_hook(ProgressHook::new(tx));

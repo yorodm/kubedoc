@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use kube::Client;
 use rig_core::{
     agent::{Agent, AgentBuilder},
@@ -5,6 +7,7 @@ use rig_core::{
 };
 use tokio::sync::mpsc;
 
+use crate::audit::{AuditHook, AuditLog};
 use crate::tools::{artifacts as file_tools, kube_client};
 use crate::tui::progress::{ProgressEvent, ProgressHook};
 
@@ -35,6 +38,7 @@ pub fn build<M: CompletionModel + 'static>(
     client: Client,
     model: M,
     progress_tx: Option<mpsc::UnboundedSender<ProgressEvent>>,
+    audit_log: Option<Arc<AuditLog>>,
 ) -> anyhow::Result<Agent<M>> {
     let mut builder = AgentBuilder::new(model)
         .name("artifacts")
@@ -52,6 +56,10 @@ pub fn build<M: CompletionModel + 'static>(
         .tool(file_tools::ValidateManifest)
         .tool(file_tools::ListAvailableApiResources { client: client.clone() })
         .default_max_turns(20);
+
+    if let Some(log) = audit_log {
+        builder = builder.add_hook(AuditHook::new(log));
+    }
 
     if let Some(tx) = progress_tx {
         builder = builder.add_hook(ProgressHook::new(tx));

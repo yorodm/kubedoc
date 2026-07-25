@@ -62,17 +62,29 @@ impl<M: CompletionModel + 'static> Coordinator<M> {
         conversation_id: Option<String>,
         progress_tx: Option<mpsc::UnboundedSender<ProgressEvent>>,
     ) -> anyhow::Result<Self> {
-        let diagnose =
-            crate::agents::diagnose::build(client.clone(), model.clone(), progress_tx.clone())?;
-        let artifacts =
-            crate::agents::artifacts::build(client.clone(), model.clone(), progress_tx.clone())?;
+        let diagnose = crate::agents::diagnose::build(
+            client.clone(),
+            model.clone(),
+            progress_tx.clone(),
+            audit_log.clone(),
+        )?;
+        let artifacts = crate::agents::artifacts::build(
+            client.clone(),
+            model.clone(),
+            progress_tx.clone(),
+            audit_log.clone(),
+        )?;
 
         // Coordinator's tool server: sub-agents + MCP tools
         let tool_handle = ToolServer::new().run();
 
         // Build review with a clone of the handle so it can access MCP tools (Prometheus)
-        let review =
-            crate::agents::review::build(model.clone(), tool_handle.clone(), progress_tx.clone())?;
+        let review = crate::agents::review::build(
+            model.clone(),
+            tool_handle.clone(),
+            progress_tx.clone(),
+            audit_log.clone(),
+        )?;
 
         tool_handle.add_tool(diagnose).await?;
         tool_handle.add_tool(review).await?;
