@@ -40,7 +40,6 @@ pub struct App {
     input: String,
     scroll_offset: usize,
     loading: bool,
-    viewport_height: usize,
 }
 
 impl App {
@@ -50,7 +49,6 @@ impl App {
             input: String::new(),
             scroll_offset: 0,
             loading: false,
-            viewport_height: 20,
         }
     }
 
@@ -62,22 +60,6 @@ impl App {
         if self.messages.len() > MAX_VISIBLE_MESSAGES {
             self.messages.pop_front();
         }
-        if self.is_at_bottom() {
-            self.scroll_offset = usize::MAX;
-        }
-    }
-
-    fn is_at_bottom(&self) -> bool {
-        let total_lines: usize = self
-            .messages
-            .iter()
-            .map(|m| match m.role {
-                MessageRole::Step { .. } | MessageRole::StepResult { .. } => 3,
-                _ => 2 + m.content.lines().count(),
-            })
-            .sum();
-        let max_scroll = total_lines.saturating_sub(self.viewport_height);
-        self.scroll_offset >= max_scroll
     }
 
     fn drain_progress(&mut self, rx: &mut mpsc::UnboundedReceiver<ProgressEvent>) {
@@ -150,7 +132,6 @@ impl App {
         let header_area = chunks[0];
         let messages_area = chunks[1];
         let input_area = chunks[2];
-        self.viewport_height = messages_area.height as usize;
 
         let header = Span::styled(
             " kubedoc — Interactive Session  |  /help commands  |  Ctrl+C cancel  |  Ctrl+D quit  |  Ctrl+L clear",
@@ -218,7 +199,11 @@ impl App {
         let max_scroll = message_lines
             .len()
             .saturating_sub(messages_area.height as usize);
-        let scroll = self.scroll_offset.min(max_scroll);
+
+        if self.scroll_offset >= max_scroll || self.scroll_offset == usize::MAX {
+            self.scroll_offset = max_scroll;
+        }
+        let scroll = self.scroll_offset;
 
         let messages_widget = Paragraph::new(message_lines)
             .block(Block::bordered().title(" Conversation "))
