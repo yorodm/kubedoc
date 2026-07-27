@@ -40,6 +40,7 @@ pub struct App {
     input: String,
     scroll_offset: usize,
     loading: bool,
+    auto_scroll: bool,
 }
 
 impl App {
@@ -49,6 +50,7 @@ impl App {
             input: String::new(),
             scroll_offset: 0,
             loading: false,
+            auto_scroll: true,
         }
     }
 
@@ -59,6 +61,9 @@ impl App {
         });
         if self.messages.len() > MAX_VISIBLE_MESSAGES {
             self.messages.pop_front();
+        }
+        if self.auto_scroll {
+            self.scroll_offset = usize::MAX;
         }
     }
 
@@ -202,6 +207,7 @@ impl App {
 
         if self.scroll_offset >= max_scroll || self.scroll_offset == usize::MAX {
             self.scroll_offset = max_scroll;
+            self.auto_scroll = true;
         }
         let scroll = self.scroll_offset;
 
@@ -239,6 +245,7 @@ impl App {
 
     fn scroll_up(&mut self) {
         self.scroll_offset = self.scroll_offset.saturating_sub(3);
+        self.auto_scroll = false;
     }
 
     fn scroll_down(&mut self) {
@@ -348,6 +355,7 @@ async fn run_loop<M: CompletionModel + Clone + 'static>(
                             }
                             KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                 app.messages.clear();
+                                app.auto_scroll = false;
                             }
                             KeyCode::Enter if !app.input.is_empty() && !app.loading => {
                                 let input = std::mem::take(&mut app.input);
@@ -359,6 +367,7 @@ async fn run_loop<M: CompletionModel + Clone + 'static>(
                                         CommandResult::Exit => break,
                                         CommandResult::Load(data) => {
                                             app.messages.clear();
+                                            app.auto_scroll = false;
                                             app.add_message(
                                                 MessageRole::System,
                                                 &format!(
@@ -410,6 +419,7 @@ async fn run_loop<M: CompletionModel + Clone + 'static>(
                             KeyCode::Down => app.scroll_down(),
                             KeyCode::PageUp => {
                                 app.scroll_offset = app.scroll_offset.saturating_sub(20);
+                                app.auto_scroll = false;
                             }
                             KeyCode::PageDown => {
                                 app.scroll_offset = app.scroll_offset.saturating_add(20);
