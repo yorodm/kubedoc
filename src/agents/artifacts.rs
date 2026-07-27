@@ -3,13 +3,20 @@ use std::sync::Arc;
 use kube::Client;
 use rig_core::{
     agent::{Agent, AgentBuilder},
-    completion::CompletionModel,
+    completion::{CompletionModel, Prompt},
+    tool::Tool,
 };
 use tokio::sync::mpsc;
 
-use crate::audit::{AuditHook, AuditLog};
-use crate::tools::{artifacts as file_tools, kube_client};
-use crate::tui::progress::{ProgressEvent, ProgressHook};
+use crate::tools::artifacts as file_tools;
+use crate::{
+    agents::{SubAgentArgs, SubAgentError, SubAgentOutput, SubAgentTool},
+    tui::progress::{ProgressEvent, ProgressHook},
+};
+use crate::{
+    audit::{AuditHook, AuditLog},
+    tools::kube_client,
+};
 
 const ARTIFACTS_PREAMBLE: &str = r#"
 You are a Kubernetes manifest generator. When asked to create or modify resources:
@@ -41,20 +48,19 @@ pub fn build<M: CompletionModel + 'static>(
     audit_log: Option<Arc<AuditLog>>,
 ) -> anyhow::Result<Agent<M>> {
     let mut builder = AgentBuilder::new(model)
-        .name("artifacts")
-        .description("Generate Kubernetes YAML manifests for deployments, services, configmaps, and other resources. Use this when the user wants to create or modify resources.")
         .preamble(ARTIFACTS_PREAMBLE)
         .temperature(0.2)
-        .tool(kube_client::ListNamespaces { client: client.clone() })
-        .tool(kube_client::GetDeployments { client: client.clone() })
-        .tool(kube_client::GetServices { client: client.clone() })
-        .tool(kube_client::GetConfigMaps { client: client.clone() })
+        .tool(kube_client::ListNamespaces {
+            client: client.clone(),
+        })
         .tool(file_tools::WriteArtifact)
         .tool(file_tools::ReadArtifact)
         .tool(file_tools::ListArtifacts)
         .tool(file_tools::GenerateManifest)
         .tool(file_tools::ValidateManifest)
-        .tool(file_tools::ListAvailableApiResources { client: client.clone() })
+        .tool(file_tools::ListAvailableApiResources {
+            client: client.clone(),
+        })
         .default_max_turns(20);
 
     if let Some(log) = audit_log {
@@ -66,4 +72,38 @@ pub fn build<M: CompletionModel + 'static>(
     }
 
     Ok(builder.build())
+}
+
+pub struct ArtifactAgent {}
+
+impl<M: CompletionModel + 'static> Tool for SubAgentTool<M, ArtifactAgent> {
+    const NAME: &'static str = "artifacts";
+
+    type Error = SubAgentError;
+
+    type Args = SubAgentArgs;
+
+    type Output = SubAgentOutput;
+
+    fn description(&self) -> String {
+        "Generate Kubernetes YAML manifests for deployments, services, configmaps, and other resources.
+            Use this when the user wants to create or modify resources.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        SubAgentArgs::as_parameters()
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let full_task = match args.context {
+            Some(ctx) if !ctx.trim().is_empty() => format!("{}\n\n{}", ctx.trim(), args.task),
+            _ => args.task,
+        };
+        let result = self
+            .agent
+            .prompt(full_task)
+            .await
+            .map_err(|e| SubAgentError(e.to_string()))?;
+        Ok(SubAgentOutput { result })
+    }
 }

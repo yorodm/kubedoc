@@ -58,8 +58,8 @@ async fn run_interactive_tui<M: CompletionModel + 'static>(
         model,
         ctx.mcp_servers.clone(),
         Some(ctx.audit_log.clone()),
-        Some(ctx.memory.clone() as Arc<dyn rig_core::memory::ConversationMemory>),
-        Some(ctx.conversation_id.clone()),
+        ctx.memory.clone(),
+        ctx.conversation_id.clone(),
         Some(progress_tx),
     )
     .await?;

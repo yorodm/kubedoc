@@ -8,9 +8,13 @@ use rig_core::{
     one_or_many::OneOrMany,
     tool::server::ToolServer,
 };
+
 use tokio::sync::mpsc;
 
-use crate::tui::progress::{ProgressEvent, ProgressHook};
+use crate::{
+    agents::{SubAgentTool, artifacts::ArtifactAgent},
+    tui::progress::{ProgressEvent, ProgressHook},
+};
 
 const COORDINATOR_PREAMBLE: &str = r#"
 You are kubedoc, a Kubernetes cluster assistant coordinating specialist agents.
@@ -59,8 +63,8 @@ impl<M: CompletionModel + 'static> Coordinator<M> {
         model: M,
         mcp_servers: Vec<crate::config::McpServerConfig>,
         audit_log: Option<Arc<crate::audit::AuditLog>>,
-        memory: Option<Arc<dyn rig_core::memory::ConversationMemory>>,
-        conversation_id: Option<String>,
+        memory: Arc<dyn rig_core::memory::ConversationMemory>,
+        conversation_id: String,
         progress_tx: Option<mpsc::UnboundedSender<ProgressEvent>>,
     ) -> anyhow::Result<Self> {
         let diagnose = crate::agents::diagnose::build(
@@ -86,10 +90,13 @@ impl<M: CompletionModel + 'static> Coordinator<M> {
             progress_tx.clone(),
             audit_log.clone(),
         )?;
-
         tool_handle.add_tool(diagnose).await?;
-        tool_handle.add_tool(review).await?;
-        tool_handle.add_tool(artifacts).await?;
+        tool_handle
+            .add_tool(SubAgentTool::<_, ArtifactAgent>::new(review))
+            .await?;
+        tool_handle
+            .add_tool(SubAgentTool::<_, ArtifactAgent>::new(artifacts))
+            .await?;
 
         // Connect to MCP servers — their tools are registered on the same handle,
         // accessible by both the coordinator and the review agent
@@ -98,7 +105,9 @@ impl<M: CompletionModel + 'static> Coordinator<M> {
         let mut agent_builder = AgentBuilder::new(model)
             .preamble(COORDINATOR_PREAMBLE)
             .temperature(0.1)
-            .default_max_turns(5)
+            .default_max_turns(10)
+            .memory(memory)
+            .conversation(conversation_id)
             .tool_server_handle(tool_handle);
 
         if let Some(log) = audit_log {
@@ -109,12 +118,8 @@ impl<M: CompletionModel + 'static> Coordinator<M> {
             agent_builder = agent_builder.add_hook(ProgressHook::new(tx));
         }
 
-        let mut agent = agent_builder.build();
-        agent.memory = memory;
-        agent.default_conversation_id = conversation_id;
-
         Ok(Self {
-            agent,
+            agent: agent_builder.build(),
             mcp_connections: Arc::new(mcp_connections),
         })
     }

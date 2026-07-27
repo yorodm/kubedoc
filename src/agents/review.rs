@@ -2,13 +2,19 @@ use std::sync::Arc;
 
 use rig_core::{
     agent::{Agent, AgentBuilder},
-    completion::CompletionModel,
-    tool::server::ToolServerHandle,
+    completion::{CompletionModel, Prompt},
+    tool::{Tool, server::ToolServerHandle},
 };
 use tokio::sync::mpsc;
 
-use crate::audit::{AuditHook, AuditLog};
-use crate::tui::progress::{ProgressEvent, ProgressHook};
+use crate::{
+    agents::SubAgentTool,
+    audit::{AuditHook, AuditLog},
+};
+use crate::{
+    agents::{SubAgentArgs, SubAgentError, SubAgentOutput},
+    tui::progress::{ProgressEvent, ProgressHook},
+};
 
 const REVIEW_PREAMBLE: &str = r#"
 You are a Kubernetes performance analyst. You have MCP tools available for
@@ -56,8 +62,6 @@ pub fn build<M: CompletionModel + 'static>(
     audit_log: Option<Arc<AuditLog>>,
 ) -> anyhow::Result<Agent<M>> {
     let mut builder = AgentBuilder::new(model)
-        .name("review")
-        .description("Analyze cluster performance, identify bottlenecks, and recommend improvements. Use this for performance-related questions.")
         .preamble(REVIEW_PREAMBLE)
         .temperature(0.0)
         .tool_server_handle(tool_handle)
@@ -72,4 +76,37 @@ pub fn build<M: CompletionModel + 'static>(
     }
 
     Ok(builder.build())
+}
+
+pub struct ReviewAgent {}
+
+impl<M: CompletionModel + 'static> Tool for SubAgentTool<M, ReviewAgent> {
+    const NAME: &'static str = "review";
+
+    type Error = SubAgentError;
+
+    type Args = SubAgentArgs;
+
+    type Output = SubAgentOutput;
+
+    fn description(&self) -> String {
+        "Analyze cluster performance, identify bottlenecks, and recommend improvements. Use this for performance-related questions.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        SubAgentArgs::as_parameters()
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let full_task = match args.context {
+            Some(ctx) if !ctx.trim().is_empty() => format!("{}\n\n{}", ctx.trim(), args.task),
+            _ => args.task,
+        };
+        let result = self
+            .agent
+            .prompt(full_task)
+            .await
+            .map_err(|e| SubAgentError(e.to_string()))?;
+        Ok(SubAgentOutput { result })
+    }
 }
