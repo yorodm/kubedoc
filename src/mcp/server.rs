@@ -25,173 +25,30 @@ impl KubedocMcpServer {
         Self { client }
     }
 
-    fn tool_definitions() -> Vec<Tool> {
-        fn tool(name: &'static str, desc: &'static str, schema: serde_json::Value) -> Tool {
+    fn tool_definitions(client: &Client) -> Vec<Tool> {
+        fn mcp_tool<T: rig_core::tool::Tool>(tool: T) -> Tool {
             let mut t = Tool::default();
-            t.name = name.into();
-            t.description = Some(desc.into());
-            t.input_schema = Arc::new(schema.as_object().unwrap().clone());
+            t.name = T::NAME.into();
+            t.description = Some(tool.description().into());
+            t.input_schema = Arc::new(tool.parameters().as_object().unwrap().clone());
             t
         }
 
+        let c = client.clone();
         vec![
-            tool(
-                "list_namespaces",
-                "List all namespaces in the cluster",
-                serde_json::json!({"type": "object", "properties": {}}),
-            ),
-            tool(
-                "get_nodes",
-                "List all nodes in the cluster with their status and capacity",
-                serde_json::json!({"type": "object", "properties": {}}),
-            ),
-            tool(
-                "get_pods",
-                "List pods. Optionally filter by namespace (omit for all namespaces).",
-                serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "namespace": {
-                            "type": "string",
-                            "description": "Namespace to filter pods by (omit for all namespaces)"
-                        }
-                    }
-                }),
-            ),
-            tool(
-                "get_events",
-                "List recent events. Optionally filter by namespace (omit for all namespaces).",
-                serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "namespace": {
-                            "type": "string",
-                            "description": "Namespace to filter events by (omit for all namespaces)"
-                        }
-                    }
-                }),
-            ),
-            tool(
-                "get_deployments",
-                "List deployments. Optionally filter by namespace (omit for all namespaces).",
-                serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "namespace": {
-                            "type": "string",
-                            "description": "Namespace to filter deployments by (omit for all namespaces)"
-                        }
-                    }
-                }),
-            ),
-            tool(
-                "get_services",
-                "List services. Optionally filter by namespace (omit for all namespaces).",
-                serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "namespace": {
-                            "type": "string",
-                            "description": "Namespace to filter services by (omit for all namespaces)"
-                        }
-                    }
-                }),
-            ),
-            tool(
-                "get_configmaps",
-                "List configmaps. Optionally filter by namespace (omit for all namespaces).",
-                serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "namespace": {
-                            "type": "string",
-                            "description": "Namespace to filter configmaps by (omit for all namespaces)"
-                        }
-                    }
-                }),
-            ),
-            tool(
-                "get_node_details",
-                "Get detailed information about a specific node by name.",
-                serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "name": {
-                            "type": "string",
-                            "description": "The name of the node"
-                        }
-                    },
-                    "required": ["name"]
-                }),
-            ),
-            tool(
-                "get_pod_logs",
-                "Get recent logs from a pod. Optionally specify a container name.",
-                serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "namespace": {
-                            "type": "string",
-                            "description": "The namespace of the pod"
-                        },
-                        "pod": {
-                            "type": "string",
-                            "description": "The name of the pod"
-                        },
-                        "container": {
-                            "type": "string",
-                            "description": "Optional container name within the pod"
-                        }
-                    },
-                    "required": ["namespace", "pod"]
-                }),
-            ),
-            tool(
-                "write_artifact",
-                "Write content to a file in the current working directory.",
-                serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Relative file path (e.g. 'manifests/nginx.yaml')"
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "File content to write"
-                        }
-                    },
-                    "required": ["path", "content"]
-                }),
-            ),
-            tool(
-                "read_artifact",
-                "Read the contents of a file in the current working directory.",
-                serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Relative file path (e.g. 'manifests/nginx.yaml')"
-                        }
-                    },
-                    "required": ["path"]
-                }),
-            ),
-            tool(
-                "list_artifacts",
-                "List files in the current directory matching a glob pattern.",
-                serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "pattern": {
-                            "type": "string",
-                            "description": "Glob pattern (e.g. '**/*.yaml', 'manifests/*.yml')"
-                        }
-                    },
-                    "required": ["pattern"]
-                }),
-            ),
+            mcp_tool(kube_client::ListNamespaces { client: c.clone() }),
+            mcp_tool(kube_client::GetNodes { client: c.clone() }),
+            mcp_tool(kube_client::GetPods { client: c.clone() }),
+            mcp_tool(kube_client::GetEvents { client: c.clone() }),
+            mcp_tool(kube_client::GetDeployments { client: c.clone() }),
+            mcp_tool(kube_client::GetServices { client: c.clone() }),
+            mcp_tool(kube_client::GetConfigMaps { client: c.clone() }),
+            mcp_tool(kube_client::GetNodeDetails { client: c.clone() }),
+            mcp_tool(kube_client::GetPodLogs { client: c.clone() }),
+            mcp_tool(crate::tools::artifacts::WriteArtifact),
+            mcp_tool(crate::tools::artifacts::ReadArtifact),
+            mcp_tool(crate::tools::artifacts::EditArtifact),
+            mcp_tool(crate::tools::artifacts::ListArtifacts),
         ]
     }
 
@@ -403,6 +260,56 @@ impl KubedocMcpServer {
                     )
                 })?
             }
+            "edit_artifact" => {
+                let path = extract_req(&mut args, "path")?;
+                let old_string = extract_req(&mut args, "old_string")?;
+                let new_string = extract_req(&mut args, "new_string")?;
+                if path.contains("..") || Path::new(&path).is_absolute() {
+                    return Err(ErrorData::new(
+                        ErrorCode::INVALID_PARAMS,
+                        "Path must be relative and must not contain '..'".to_string(),
+                        None,
+                    ));
+                }
+                let content = tokio::fs::read_to_string(&path).await.map_err(|e| {
+                    ErrorData::new(
+                        ErrorCode::INTERNAL_ERROR,
+                        format!("Failed to read file: {e}"),
+                        None,
+                    )
+                })?;
+                if !content.contains(&old_string) {
+                    return Err(ErrorData::new(
+                        ErrorCode::INVALID_PARAMS,
+                        format!("old_string not found in file {path}"),
+                        None,
+                    ));
+                }
+                let count = content.matches(&old_string).count();
+                if count > 1 {
+                    return Err(ErrorData::new(
+                        ErrorCode::INVALID_PARAMS,
+                        format!("Found {count} matches for old_string in file {path}. Provide more context to make the match unique."),
+                        None,
+                    ));
+                }
+                let new_content = content.replace(&old_string, &new_string);
+                tokio::fs::write(&path, &new_content).await.map_err(|e| {
+                    ErrorData::new(
+                        ErrorCode::INTERNAL_ERROR,
+                        format!("Failed to write file: {e}"),
+                        None,
+                    )
+                })?;
+                let old_len = old_string.len();
+                let new_len = new_string.len();
+                let diff = if new_len >= old_len {
+                    format!("+{} bytes", new_len - old_len)
+                } else {
+                    format!("-{} bytes", old_len - new_len)
+                };
+                format!("Edited {path} — replaced 1 occurrence ({old_len} → {new_len} chars, {diff})")
+            }
             "list_artifacts" => {
                 let pattern = extract_req(&mut args, "pattern")?;
                 if pattern.contains("..") {
@@ -465,7 +372,7 @@ impl ServerHandler for KubedocMcpServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         Ok(ListToolsResult {
-            tools: Self::tool_definitions(),
+            tools: Self::tool_definitions(&self.client),
             next_cursor: None,
             meta: None,
         })

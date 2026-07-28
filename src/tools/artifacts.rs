@@ -406,6 +406,86 @@ impl Tool for ValidateManifest {
     }
 }
 
+// --- EditArtifact ---
+
+#[derive(Deserialize)]
+pub struct EditArtifactArgs {
+    pub path: String,
+    pub old_string: String,
+    pub new_string: String,
+}
+
+pub struct EditArtifact;
+
+impl Tool for EditArtifact {
+    const NAME: &'static str = "edit_artifact";
+
+    type Error = FileToolError;
+    type Args = EditArtifactArgs;
+    type Output = String;
+
+    fn description(&self) -> String {
+        "Edit a file by finding a unique string and replacing it with new content. The old_string must match exactly one location in the file.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Relative file path to edit (e.g. 'manifests/nginx.yaml')"
+                },
+                "old_string": {
+                    "type": "string",
+                    "description": "The exact text to find and replace (must appear exactly once in the file)"
+                },
+                "new_string": {
+                    "type": "string",
+                    "description": "The replacement text"
+                }
+            },
+            "required": ["path", "old_string", "new_string"]
+        })
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let path = validate_path(&args.path)?;
+        let content = tokio::fs::read_to_string(&path).await?;
+
+        if !content.contains(&args.old_string) {
+            return Err(FileToolError::Other(format!(
+                "old_string not found in file {}: matching text does not appear in the file content",
+                args.path
+            )));
+        }
+
+        let count = content.matches(&args.old_string).count();
+        if count > 1 {
+            return Err(FileToolError::Other(format!(
+                "Found {} matches for old_string in file {}. Provide more surrounding context to make the match unique.",
+                count, args.path
+            )));
+        }
+
+        let new_content = content.replace(&args.old_string, &args.new_string);
+        tokio::fs::write(&path, &new_content).await?;
+
+        let old_len = args.old_string.len();
+        let new_len = args.new_string.len();
+        let diff = if new_len >= old_len {
+            format!("+{} bytes", new_len - old_len)
+        } else {
+            format!("-{} bytes", old_len - new_len)
+        };
+
+        Ok(format!(
+            "Edited {} — replaced 1 occurrence (original: {old_len} chars, replacement: {new_len} chars, {diff})",
+            args.path
+        ))
+    }
+}
+
 // --- ListAvailableApiResources ---
 
 #[derive(Deserialize)]
@@ -473,6 +553,9 @@ impl Tool for ListAvailableApiResources {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::sync::Mutex;
+
+    static FS_LOCK: Mutex<()> = Mutex::const_new(());
 
     #[tokio::test]
     async fn test_generate_manifest_basic() {
@@ -586,6 +669,7 @@ metadata:
 
     #[tokio::test]
     async fn test_write_and_read_artifact() {
+        let _lock = FS_LOCK.lock().await;
         let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         std::fs::create_dir_all(&dir).unwrap();
         let orig_dir = std::env::current_dir().unwrap();
@@ -629,6 +713,111 @@ metadata:
         assert!(result.contains("b.yaml"));
         assert!(!result.contains("c.json"));
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_edit_artifact() {
+        let _lock = FS_LOCK.lock().await;
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        let orig_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+
+        let write = WriteArtifact;
+        write
+            .call(WriteArtifactArgs {
+                path: "test.yaml".into(),
+                content: "foo: bar\nbaz: qux\n".into(),
+            })
+            .await
+            .unwrap();
+
+        let edit = EditArtifact;
+        let result = edit
+            .call(EditArtifactArgs {
+                path: "test.yaml".into(),
+                old_string: "baz: qux".into(),
+                new_string: "baz: edited".into(),
+            })
+            .await
+            .unwrap();
+        assert!(result.contains("Edited"));
+
+        let read = ReadArtifact;
+        let content = read
+            .call(ReadArtifactArgs {
+                path: "test.yaml".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(content, "foo: bar\nbaz: edited\n");
+
+        let _ = std::env::set_current_dir(&orig_dir);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_edit_artifact_not_found() {
+        let _lock = FS_LOCK.lock().await;
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        let orig_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+
+        let write = WriteArtifact;
+        write
+            .call(WriteArtifactArgs {
+                path: "test.yaml".into(),
+                content: "foo: bar".into(),
+            })
+            .await
+            .unwrap();
+
+        let edit = EditArtifact;
+        let result = edit
+            .call(EditArtifactArgs {
+                path: "test.yaml".into(),
+                old_string: "nonexistent".into(),
+                new_string: "replacement".into(),
+            })
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+
+        let _ = std::env::set_current_dir(&orig_dir);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_edit_artifact_ambiguous() {
+        let _lock = FS_LOCK.lock().await;
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        let orig_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+
+        let write = WriteArtifact;
+        write
+            .call(WriteArtifactArgs {
+                path: "test.yaml".into(),
+                content: "foo: bar\nfoo: bar\n".into(),
+            })
+            .await
+            .unwrap();
+
+        let edit = EditArtifact;
+        let result = edit
+            .call(EditArtifactArgs {
+                path: "test.yaml".into(),
+                old_string: "foo: bar".into(),
+                new_string: "baz: qux".into(),
+            })
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Found 2 matches"));
+
+        let _ = std::env::set_current_dir(&orig_dir);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

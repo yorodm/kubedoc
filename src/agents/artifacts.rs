@@ -56,6 +56,7 @@ pub fn build<M: CompletionModel + 'static>(
         })
         .tool(file_tools::WriteArtifact)
         .tool(file_tools::ReadArtifact)
+        .tool(file_tools::EditArtifact)
         .tool(file_tools::ListArtifacts)
         .tool(file_tools::GenerateManifest)
         .tool(file_tools::ValidateManifest)
