@@ -207,24 +207,12 @@ impl KubedocMcpServer {
                     .list(&ListParams::default().limit(500))
                     .await
                     .map_err(to_error)?;
-                let items: Vec<String> = list
-                    .items
-                    .iter()
-                    .map(|ns| {
-                        let name = ns.metadata.name.as_deref().unwrap_or("unknown");
-                        let phase = ns
-                            .status
-                            .as_ref()
-                            .and_then(|s| s.phase.as_deref())
-                            .unwrap_or("Unknown");
-                        format!("{name} (phase: {phase})")
-                    })
-                    .collect();
-                if items.is_empty() {
-                    "No namespaces found.".to_string()
-                } else {
-                    format!("Namespaces ({}):\n{}", items.len(), items.join("\n"))
-                }
+                let namespaces: Vec<_> = list.items.iter().map(kube_client::namespace_state).collect();
+                serde_json::to_string_pretty(&kube_client::NamespaceListResult {
+                    count: namespaces.len(),
+                    namespaces,
+                })
+                .unwrap_or_default()
             }
             "get_nodes" => {
                 let api: Api<Node> = Api::all(self.client.clone());
@@ -232,12 +220,12 @@ impl KubedocMcpServer {
                     .list(&ListParams::default().limit(500))
                     .await
                     .map_err(to_error)?;
-                let items: Vec<String> = list.items.iter().map(kube_client::node_summary).collect();
-                if items.is_empty() {
-                    "No nodes found.".to_string()
-                } else {
-                    format!("Nodes ({}):\n{}", items.len(), items.join("\n---\n"))
-                }
+                let nodes: Vec<_> = list.items.iter().map(kube_client::node_state).collect();
+                serde_json::to_string_pretty(&kube_client::NodeListResult {
+                    count: nodes.len(),
+                    nodes,
+                })
+                .unwrap_or_default()
             }
             "get_pods" => {
                 let ns = extract_opt(&mut args, "namespace");
@@ -249,12 +237,12 @@ impl KubedocMcpServer {
                     .list(&ListParams::default().limit(500))
                     .await
                     .map_err(to_error)?;
-                let items: Vec<String> = list.items.iter().map(kube_client::pod_summary).collect();
-                if items.is_empty() {
-                    "No pods found.".to_string()
-                } else {
-                    format!("Pods ({}):\n{}", items.len(), items.join("\n"))
-                }
+                let pods: Vec<_> = list.items.iter().map(kube_client::pod_state).collect();
+                serde_json::to_string_pretty(&kube_client::PodListResult {
+                    count: pods.len(),
+                    pods,
+                })
+                .unwrap_or_default()
             }
             "get_events" => {
                 let ns = extract_opt(&mut args, "namespace");
@@ -266,13 +254,12 @@ impl KubedocMcpServer {
                     .list(&ListParams::default().limit(500))
                     .await
                     .map_err(to_error)?;
-                let items: Vec<String> =
-                    list.items.iter().map(kube_client::event_summary).collect();
-                if items.is_empty() {
-                    "No events found.".to_string()
-                } else {
-                    format!("Events ({}):\n{}", items.len(), items.join("\n"))
-                }
+                let events: Vec<_> = list.items.iter().map(kube_client::event_state).collect();
+                serde_json::to_string_pretty(&kube_client::EventListResult {
+                    count: events.len(),
+                    events,
+                })
+                .unwrap_or_default()
             }
             "get_deployments" => {
                 let ns = extract_opt(&mut args, "namespace");
@@ -284,16 +271,16 @@ impl KubedocMcpServer {
                     .list(&ListParams::default().limit(500))
                     .await
                     .map_err(to_error)?;
-                let items: Vec<String> = list
+                let deployments: Vec<_> = list
                     .items
                     .iter()
-                    .map(kube_client::deployment_summary)
+                    .map(kube_client::deployment_state)
                     .collect();
-                if items.is_empty() {
-                    "No deployments found.".to_string()
-                } else {
-                    format!("Deployments ({}):\n{}", items.len(), items.join("\n"))
-                }
+                serde_json::to_string_pretty(&kube_client::DeploymentListResult {
+                    count: deployments.len(),
+                    deployments,
+                })
+                .unwrap_or_default()
             }
             "get_services" => {
                 let ns = extract_opt(&mut args, "namespace");
@@ -305,16 +292,16 @@ impl KubedocMcpServer {
                     .list(&ListParams::default().limit(500))
                     .await
                     .map_err(to_error)?;
-                let items: Vec<String> = list
+                let services: Vec<_> = list
                     .items
                     .iter()
-                    .map(kube_client::service_summary)
+                    .map(kube_client::service_state)
                     .collect();
-                if items.is_empty() {
-                    "No services found.".to_string()
-                } else {
-                    format!("Services ({}):\n{}", items.len(), items.join("\n"))
-                }
+                serde_json::to_string_pretty(&kube_client::ServiceListResult {
+                    count: services.len(),
+                    services,
+                })
+                .unwrap_or_default()
             }
             "get_configmaps" => {
                 let ns = extract_opt(&mut args, "namespace");
@@ -326,16 +313,16 @@ impl KubedocMcpServer {
                     .list(&ListParams::default().limit(500))
                     .await
                     .map_err(to_error)?;
-                let items: Vec<String> = list
+                let configmaps: Vec<_> = list
                     .items
                     .iter()
-                    .map(kube_client::configmap_summary)
+                    .map(kube_client::configmap_state)
                     .collect();
-                if items.is_empty() {
-                    "No configmaps found.".to_string()
-                } else {
-                    format!("ConfigMaps ({}):\n{}", items.len(), items.join("\n"))
-                }
+                serde_json::to_string_pretty(&kube_client::ConfigMapListResult {
+                    count: configmaps.len(),
+                    configmaps,
+                })
+                .unwrap_or_default()
             }
             "get_node_details" => {
                 let name = extract_req(&mut args, "name")?;
@@ -347,28 +334,8 @@ impl KubedocMcpServer {
                         None,
                     )
                 })?;
-                let summary = kube_client::node_summary(&node);
-                let extra = node
-                    .status
-                    .as_ref()
-                    .map(|s| {
-                        let mut parts = Vec::new();
-                        if let Some(addrs) = &s.addresses {
-                            for addr in addrs {
-                                parts.push(format!(
-                                    "  address: type={} address={}",
-                                    addr.type_.as_str(),
-                                    addr.address.as_str()
-                                ));
-                            }
-                        }
-                        if let Some(images) = &s.images {
-                            parts.push(format!("  container_images_count: {}", images.len()));
-                        }
-                        parts.join("\n")
-                    })
-                    .unwrap_or_default();
-                format!("{summary}\n{extra}")
+                let state = kube_client::node_state(&node);
+                serde_json::to_string_pretty(&state).unwrap_or_default()
             }
             "get_pod_logs" => {
                 let namespace = extract_req(&mut args, "namespace")?;

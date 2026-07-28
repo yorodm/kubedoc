@@ -7,8 +7,145 @@ use kube::{
     config::{Config, KubeConfigOptions, Kubeconfig},
 };
 use rig_core::tool::Tool;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+
+// --- Structured state types ---
+
+#[derive(Debug, Serialize)]
+pub struct NodeCondition {
+    pub type_: String,
+    pub status: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct NodeAddress {
+    pub type_: String,
+    pub address: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ResourceCapacity {
+    pub cpu: String,
+    pub memory: String,
+    pub pods: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct NodeState {
+    pub name: String,
+    pub conditions: Vec<NodeCondition>,
+    pub capacity: Option<ResourceCapacity>,
+    pub addresses: Vec<NodeAddress>,
+    pub container_images_count: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PodState {
+    pub name: String,
+    pub namespace: String,
+    pub phase: String,
+    pub host_ip: String,
+    pub pod_ip: String,
+    pub restarts: i32,
+    pub containers: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EventState {
+    pub name: String,
+    pub namespace: String,
+    pub kind: String,
+    pub type_: String,
+    pub reason: String,
+    pub message: String,
+    pub count: i32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DeploymentState {
+    pub name: String,
+    pub namespace: String,
+    pub desired: i32,
+    pub ready: i32,
+    pub available: i32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ServicePort {
+    pub port: i32,
+    pub protocol: String,
+    pub target_port: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ServiceState {
+    pub name: String,
+    pub namespace: String,
+    pub type_: String,
+    pub cluster_ip: String,
+    pub ports: Vec<ServicePort>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ConfigMapState {
+    pub name: String,
+    pub namespace: String,
+    pub data_keys: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct NamespaceState {
+    pub name: String,
+    pub phase: String,
+}
+
+// --- List result wrappers ---
+
+#[derive(Debug, Serialize)]
+pub struct NamespaceListResult {
+    pub count: usize,
+    pub namespaces: Vec<NamespaceState>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct NodeListResult {
+    pub count: usize,
+    pub nodes: Vec<NodeState>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PodListResult {
+    pub count: usize,
+    pub pods: Vec<PodState>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EventListResult {
+    pub count: usize,
+    pub events: Vec<EventState>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DeploymentListResult {
+    pub count: usize,
+    pub deployments: Vec<DeploymentState>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ServiceListResult {
+    pub count: usize,
+    pub services: Vec<ServiceState>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ConfigMapListResult {
+    pub count: usize,
+    pub configmaps: Vec<ConfigMapState>,
+}
+
+// --- Error type ---
 
 #[derive(Debug, thiserror::Error)]
 pub enum KubeToolError {
@@ -19,6 +156,8 @@ pub enum KubeToolError {
     #[error("{0}")]
     Other(String),
 }
+
+// --- Client ---
 
 pub struct KubeClient {
     client: Client,
@@ -68,46 +207,86 @@ impl KubeClient {
     }
 }
 
-pub fn node_summary(node: &Node) -> String {
-    let name = node.metadata.name.as_deref().unwrap_or("unknown");
+// --- Summary functions returning structured state ---
+
+pub fn namespace_state(ns: &Namespace) -> NamespaceState {
+    let name = ns.metadata.name.as_deref().unwrap_or("unknown").to_string();
+    let phase = ns
+        .status
+        .as_ref()
+        .and_then(|s| s.phase.as_deref())
+        .unwrap_or("Unknown")
+        .to_string();
+    NamespaceState { name, phase }
+}
+
+pub fn node_state(node: &Node) -> NodeState {
+    let name = node.metadata.name.as_deref().unwrap_or("unknown").to_string();
     let status = node.status.as_ref();
+
     let conditions = status
         .and_then(|s| s.conditions.as_ref())
         .map(|c| {
             c.iter()
-                .map(|cond| {
-                    format!(
-                        "  type={} status={} reason={}",
-                        cond.type_.as_str(),
-                        cond.status.as_str(),
-                        cond.reason.as_deref().unwrap_or("")
-                    )
+                .map(|cond| NodeCondition {
+                    type_: cond.type_.clone(),
+                    status: cond.status.clone(),
+                    reason: cond.reason.clone().unwrap_or_default(),
                 })
-                .collect::<Vec<_>>()
-                .join("\n")
+                .collect()
         })
         .unwrap_or_default();
-    let capacity = status
-        .and_then(|s| s.capacity.as_ref())
-        .map(|c| {
-            format!(
-                "  capacity: cpu={} memory={} pods={}",
-                c.get("cpu").map(|v| v.0.as_str()).unwrap_or("?"),
-                c.get("memory").map(|v| v.0.as_str()).unwrap_or("?"),
-                c.get("pods").map(|v| v.0.as_str()).unwrap_or("?"),
-            )
+
+    let capacity = status.and_then(|s| s.capacity.as_ref()).map(|c| ResourceCapacity {
+        cpu: c.get("cpu").map(|v| v.0.clone()).unwrap_or_default(),
+        memory: c.get("memory").map(|v| v.0.clone()).unwrap_or_default(),
+        pods: c.get("pods").map(|v| v.0.clone()).unwrap_or_default(),
+    });
+
+    let addresses = status
+        .and_then(|s| s.addresses.as_ref())
+        .map(|a| {
+            a.iter()
+                .map(|addr| NodeAddress {
+                    type_: addr.type_.clone(),
+                    address: addr.address.clone(),
+                })
+                .collect()
         })
         .unwrap_or_default();
-    format!("Node: {name}\n{conditions}\n{capacity}")
+
+    let container_images_count = status.and_then(|s| s.images.as_ref()).map(|i| i.len());
+
+    NodeState {
+        name,
+        conditions,
+        capacity,
+        addresses,
+        container_images_count,
+    }
 }
 
-pub fn pod_summary(pod: &Pod) -> String {
-    let name = pod.metadata.name.as_deref().unwrap_or("unknown");
-    let ns = pod.metadata.namespace.as_deref().unwrap_or("default");
+pub fn pod_state(pod: &Pod) -> PodState {
+    let name = pod.metadata.name.as_deref().unwrap_or("unknown").to_string();
+    let namespace = pod
+        .metadata
+        .namespace
+        .as_deref()
+        .unwrap_or("default")
+        .to_string();
     let status = pod.status.as_ref();
-    let phase = status.and_then(|s| s.phase.as_deref()).unwrap_or("Unknown");
-    let host_ip = status.and_then(|s| s.host_ip.as_deref()).unwrap_or("N/A");
-    let pod_ip = status.and_then(|s| s.pod_ip.as_deref()).unwrap_or("N/A");
+    let phase = status
+        .and_then(|s| s.phase.as_deref())
+        .unwrap_or("Unknown")
+        .to_string();
+    let host_ip = status
+        .and_then(|s| s.host_ip.as_deref())
+        .unwrap_or("N/A")
+        .to_string();
+    let pod_ip = status
+        .and_then(|s| s.pod_ip.as_deref())
+        .unwrap_or("N/A")
+        .to_string();
     let restarts: i32 = status
         .and_then(|s| s.container_statuses.as_ref())
         .map(|cs| cs.iter().map(|c| c.restart_count).sum())
@@ -118,29 +297,66 @@ pub fn pod_summary(pod: &Pod) -> String {
         .map(|s| s.containers.iter())
         .map(|c| c.map(|c| c.name.clone()).collect())
         .unwrap_or_default();
-    format!(
-        "Pod: {name} namespace={ns} phase={phase} node_ip={host_ip} pod_ip={pod_ip} restarts={restarts} containers={}",
-        containers.join(", ")
-    )
+
+    PodState {
+        name,
+        namespace,
+        phase,
+        host_ip,
+        pod_ip,
+        restarts,
+        containers,
+    }
 }
 
-pub fn event_summary(event: &Event) -> String {
-    let name = event.metadata.name.as_deref().unwrap_or("unknown");
-    let ns = event.metadata.namespace.as_deref().unwrap_or("default");
-    let kind = event.involved_object.kind.as_deref().unwrap_or("Unknown");
-    let type_ = event.type_.as_deref().unwrap_or("Unknown");
-    let reason = event.reason.as_deref().unwrap_or("");
-    let message = event.message.as_deref().unwrap_or("");
+pub fn event_state(event: &Event) -> EventState {
+    let name = event.metadata.name.as_deref().unwrap_or("unknown").to_string();
+    let namespace = event
+        .metadata
+        .namespace
+        .as_deref()
+        .unwrap_or("default")
+        .to_string();
+    let kind = event
+        .involved_object
+        .kind
+        .as_deref()
+        .unwrap_or("Unknown")
+        .to_string();
+    let type_ = event
+        .type_
+        .as_deref()
+        .unwrap_or("Unknown")
+        .to_string();
+    let reason = event.reason.as_deref().unwrap_or("").to_string();
+    let message = event.message.as_deref().unwrap_or("").to_string();
     let count = event.count.unwrap_or(0);
-    format!(
-        "Event: {name} namespace={ns} kind={kind} type={type_} reason={reason} count={count} message={message}"
-    )
+
+    EventState {
+        name,
+        namespace,
+        kind,
+        type_,
+        reason,
+        message,
+        count,
+    }
 }
 
-pub fn deployment_summary(deploy: &Deployment) -> String {
-    let name = deploy.metadata.name.as_deref().unwrap_or("unknown");
-    let ns = deploy.metadata.namespace.as_deref().unwrap_or("default");
-    let replicas = deploy.spec.as_ref().and_then(|s| s.replicas).unwrap_or(0);
+pub fn deployment_state(deploy: &Deployment) -> DeploymentState {
+    let name = deploy
+        .metadata
+        .name
+        .as_deref()
+        .unwrap_or("unknown")
+        .to_string();
+    let namespace = deploy
+        .metadata
+        .namespace
+        .as_deref()
+        .unwrap_or("default")
+        .to_string();
+    let desired = deploy.spec.as_ref().and_then(|s| s.replicas).unwrap_or(0);
     let ready = deploy
         .status
         .as_ref()
@@ -151,9 +367,14 @@ pub fn deployment_summary(deploy: &Deployment) -> String {
         .as_ref()
         .and_then(|s| s.available_replicas)
         .unwrap_or(0);
-    format!(
-        "Deployment: {name} namespace={ns} desired={replicas} ready={ready} available={available}"
-    )
+
+    DeploymentState {
+        name,
+        namespace,
+        desired,
+        ready,
+        available,
+    }
 }
 
 fn int_or_string_display(v: &IntOrString) -> String {
@@ -163,50 +384,69 @@ fn int_or_string_display(v: &IntOrString) -> String {
     }
 }
 
-pub fn service_summary(svc: &Service) -> String {
-    let name = svc.metadata.name.as_deref().unwrap_or("unknown");
-    let ns = svc.metadata.namespace.as_deref().unwrap_or("default");
+pub fn service_state(svc: &Service) -> ServiceState {
+    let name = svc.metadata.name.as_deref().unwrap_or("unknown").to_string();
+    let namespace = svc
+        .metadata
+        .namespace
+        .as_deref()
+        .unwrap_or("default")
+        .to_string();
     let type_ = svc
         .spec
         .as_ref()
         .and_then(|s| s.type_.as_deref())
-        .unwrap_or("ClusterIP");
+        .unwrap_or("ClusterIP")
+        .to_string();
     let cluster_ip = svc
         .spec
         .as_ref()
         .and_then(|s| s.cluster_ip.as_deref())
-        .unwrap_or("None");
-    let ports: Vec<String> = svc
+        .unwrap_or("None")
+        .to_string();
+    let ports: Vec<ServicePort> = svc
         .spec
         .as_ref()
         .and_then(|s| s.ports.as_ref())
         .map(|p| {
             p.iter()
-                .map(|p| {
-                    format!(
-                        "{}/{}->{}",
-                        p.port,
-                        p.protocol.as_deref().unwrap_or("TCP"),
-                        p.target_port
-                            .as_ref()
-                            .map(int_or_string_display)
-                            .unwrap_or_default()
-                    )
+                .map(|p| ServicePort {
+                    port: p.port,
+                    protocol: p.protocol.clone().unwrap_or_default(),
+                    target_port: p
+                        .target_port
+                        .as_ref()
+                        .map(int_or_string_display)
+                        .unwrap_or_default(),
                 })
                 .collect()
         })
         .unwrap_or_default();
-    format!(
-        "Service: {name} namespace={ns} type={type_} cluster_ip={cluster_ip} ports=[{}]",
-        ports.join(", ")
-    )
+
+    ServiceState {
+        name,
+        namespace,
+        type_,
+        cluster_ip,
+        ports,
+    }
 }
 
-pub fn configmap_summary(cm: &ConfigMap) -> String {
-    let name = cm.metadata.name.as_deref().unwrap_or("unknown");
-    let ns = cm.metadata.namespace.as_deref().unwrap_or("default");
-    let data_count = cm.data.as_ref().map(|d| d.len()).unwrap_or(0);
-    format!("ConfigMap: {name} namespace={ns} data_keys={data_count}")
+pub fn configmap_state(cm: &ConfigMap) -> ConfigMapState {
+    let name = cm.metadata.name.as_deref().unwrap_or("unknown").to_string();
+    let namespace = cm
+        .metadata
+        .namespace
+        .as_deref()
+        .unwrap_or("default")
+        .to_string();
+    let data_keys = cm.data.as_ref().map(|d| d.len()).unwrap_or(0);
+
+    ConfigMapState {
+        name,
+        namespace,
+        data_keys,
+    }
 }
 
 // --- Args types ---
@@ -242,7 +482,7 @@ impl Tool for ListNamespaces {
 
     type Error = KubeToolError;
     type Args = NoArgs;
-    type Output = String;
+    type Output = serde_json::Value;
 
     fn description(&self) -> String {
         "List all namespaces in the cluster".to_string()
@@ -258,25 +498,12 @@ impl Tool for ListNamespaces {
     async fn call(&self, _args: Self::Args) -> Result<Self::Output, Self::Error> {
         let api: Api<Namespace> = Api::all(self.client.clone());
         let list = api.list(&ListParams::default().limit(500)).await?;
-        let items: Vec<String> = list
-            .items
-            .iter()
-            .map(|ns| {
-                let name = ns.metadata.name.as_deref().unwrap_or("unknown");
-                let status = ns.status.as_ref();
-                let phase = status.and_then(|s| s.phase.as_deref()).unwrap_or("Unknown");
-                format!("{name} (phase: {phase})")
-            })
-            .collect();
-        if items.is_empty() {
-            Ok("No namespaces found.".to_string())
-        } else {
-            Ok(format!(
-                "Namespaces ({}):\n{}",
-                items.len(),
-                items.join("\n")
-            ))
-        }
+        let namespaces: Vec<NamespaceState> = list.items.iter().map(namespace_state).collect();
+        Ok(serde_json::to_value(NamespaceListResult {
+            count: namespaces.len(),
+            namespaces,
+        })
+        .unwrap_or_default())
     }
 }
 
@@ -291,7 +518,7 @@ impl Tool for GetNodes {
 
     type Error = KubeToolError;
     type Args = NoArgs;
-    type Output = String;
+    type Output = serde_json::Value;
 
     fn description(&self) -> String {
         "List all nodes in the cluster with their status and capacity".to_string()
@@ -307,16 +534,12 @@ impl Tool for GetNodes {
     async fn call(&self, _args: Self::Args) -> Result<Self::Output, Self::Error> {
         let api: Api<Node> = Api::all(self.client.clone());
         let list = api.list(&ListParams::default().limit(500)).await?;
-        let items: Vec<String> = list.items.iter().map(node_summary).collect();
-        if items.is_empty() {
-            Ok("No nodes found.".to_string())
-        } else {
-            Ok(format!(
-                "Nodes ({}):\n{}",
-                items.len(),
-                items.join("\n---\n")
-            ))
-        }
+        let nodes: Vec<NodeState> = list.items.iter().map(node_state).collect();
+        Ok(serde_json::to_value(NodeListResult {
+            count: nodes.len(),
+            nodes,
+        })
+        .unwrap_or_default())
     }
 }
 
@@ -331,7 +554,7 @@ impl Tool for GetPods {
 
     type Error = KubeToolError;
     type Args = NamespaceArgs;
-    type Output = String;
+    type Output = serde_json::Value;
 
     fn description(&self) -> String {
         "List pods. Optionally filter by namespace (omit for all namespaces).".to_string()
@@ -355,12 +578,12 @@ impl Tool for GetPods {
             None => Api::all(self.client.clone()),
         };
         let list = api.list(&ListParams::default().limit(500)).await?;
-        let items: Vec<String> = list.items.iter().map(pod_summary).collect();
-        if items.is_empty() {
-            Ok("No pods found.".to_string())
-        } else {
-            Ok(format!("Pods ({}):\n{}", items.len(), items.join("\n")))
-        }
+        let pods: Vec<PodState> = list.items.iter().map(pod_state).collect();
+        Ok(serde_json::to_value(PodListResult {
+            count: pods.len(),
+            pods,
+        })
+        .unwrap_or_default())
     }
 }
 
@@ -375,7 +598,7 @@ impl Tool for GetEvents {
 
     type Error = KubeToolError;
     type Args = NamespaceArgs;
-    type Output = String;
+    type Output = serde_json::Value;
 
     fn description(&self) -> String {
         "List recent events. Optionally filter by namespace (omit for all namespaces).".to_string()
@@ -399,12 +622,12 @@ impl Tool for GetEvents {
             None => Api::all(self.client.clone()),
         };
         let list = api.list(&ListParams::default().limit(500)).await?;
-        let items: Vec<String> = list.items.iter().map(event_summary).collect();
-        if items.is_empty() {
-            Ok("No events found.".to_string())
-        } else {
-            Ok(format!("Events ({}):\n{}", items.len(), items.join("\n")))
-        }
+        let events: Vec<EventState> = list.items.iter().map(event_state).collect();
+        Ok(serde_json::to_value(EventListResult {
+            count: events.len(),
+            events,
+        })
+        .unwrap_or_default())
     }
 }
 
@@ -419,7 +642,7 @@ impl Tool for GetDeployments {
 
     type Error = KubeToolError;
     type Args = NamespaceArgs;
-    type Output = String;
+    type Output = serde_json::Value;
 
     fn description(&self) -> String {
         "List deployments. Optionally filter by namespace (omit for all namespaces).".to_string()
@@ -443,16 +666,12 @@ impl Tool for GetDeployments {
             None => Api::all(self.client.clone()),
         };
         let list = api.list(&ListParams::default().limit(500)).await?;
-        let items: Vec<String> = list.items.iter().map(deployment_summary).collect();
-        if items.is_empty() {
-            Ok("No deployments found.".to_string())
-        } else {
-            Ok(format!(
-                "Deployments ({}):\n{}",
-                items.len(),
-                items.join("\n")
-            ))
-        }
+        let deployments: Vec<DeploymentState> = list.items.iter().map(deployment_state).collect();
+        Ok(serde_json::to_value(DeploymentListResult {
+            count: deployments.len(),
+            deployments,
+        })
+        .unwrap_or_default())
     }
 }
 
@@ -467,7 +686,7 @@ impl Tool for GetServices {
 
     type Error = KubeToolError;
     type Args = NamespaceArgs;
-    type Output = String;
+    type Output = serde_json::Value;
 
     fn description(&self) -> String {
         "List services. Optionally filter by namespace (omit for all namespaces).".to_string()
@@ -491,12 +710,12 @@ impl Tool for GetServices {
             None => Api::all(self.client.clone()),
         };
         let list = api.list(&ListParams::default().limit(500)).await?;
-        let items: Vec<String> = list.items.iter().map(service_summary).collect();
-        if items.is_empty() {
-            Ok("No services found.".to_string())
-        } else {
-            Ok(format!("Services ({}):\n{}", items.len(), items.join("\n")))
-        }
+        let services: Vec<ServiceState> = list.items.iter().map(service_state).collect();
+        Ok(serde_json::to_value(ServiceListResult {
+            count: services.len(),
+            services,
+        })
+        .unwrap_or_default())
     }
 }
 
@@ -511,7 +730,7 @@ impl Tool for GetConfigMaps {
 
     type Error = KubeToolError;
     type Args = NamespaceArgs;
-    type Output = String;
+    type Output = serde_json::Value;
 
     fn description(&self) -> String {
         "List configmaps. Optionally filter by namespace (omit for all namespaces).".to_string()
@@ -535,16 +754,12 @@ impl Tool for GetConfigMaps {
             None => Api::all(self.client.clone()),
         };
         let list = api.list(&ListParams::default().limit(500)).await?;
-        let items: Vec<String> = list.items.iter().map(configmap_summary).collect();
-        if items.is_empty() {
-            Ok("No configmaps found.".to_string())
-        } else {
-            Ok(format!(
-                "ConfigMaps ({}):\n{}",
-                items.len(),
-                items.join("\n")
-            ))
-        }
+        let configmaps: Vec<ConfigMapState> = list.items.iter().map(configmap_state).collect();
+        Ok(serde_json::to_value(ConfigMapListResult {
+            count: configmaps.len(),
+            configmaps,
+        })
+        .unwrap_or_default())
     }
 }
 
@@ -559,7 +774,7 @@ impl Tool for GetNodeDetails {
 
     type Error = KubeToolError;
     type Args = NodeNameArgs;
-    type Output = String;
+    type Output = serde_json::Value;
 
     fn description(&self) -> String {
         "Get detailed information about a specific node by name.".to_string()
@@ -583,28 +798,8 @@ impl Tool for GetNodeDetails {
         let node = api.get(&args.name).await.map_err(|e| {
             KubeToolError::Other(format!("Failed to get node {}: {}", args.name, e))
         })?;
-        let summary = node_summary(&node);
-        let extra = node
-            .status
-            .as_ref()
-            .map(|s| {
-                let mut parts = Vec::new();
-                if let Some(addrs) = &s.addresses {
-                    for addr in addrs {
-                        parts.push(format!(
-                            "  address: type={} address={}",
-                            addr.type_.as_str(),
-                            addr.address.as_str()
-                        ));
-                    }
-                }
-                if let Some(images) = &s.images {
-                    parts.push(format!("  container_images_count: {}", images.len()));
-                }
-                parts.join("\n")
-            })
-            .unwrap_or_default();
-        Ok(format!("{summary}\n{extra}"))
+        let state = node_state(&node);
+        Ok(serde_json::to_value(state).unwrap_or_default())
     }
 }
 
