@@ -30,6 +30,8 @@ pub struct AuditEntry {
     pub tokens: Option<u64>,
 }
 
+// TODO: This is broken right now, better to have it as a future that's receiving messages from
+// senders
 impl AuditLog {
     pub fn new(session_id: &str, data_dir: Option<&str>) -> anyhow::Result<Self> {
         let dir = crate::config::kubedoc_home(data_dir).join("audit");
@@ -153,11 +155,12 @@ impl<M: CompletionModel + 'static> AgentHook<M> for AuditHook {
         event: StepEvent<'_, M>,
     ) -> impl Future<Output = Flow> + WasmCompatSend {
         let log = self.log.clone();
+        let name = _ctx.agent_name().unwrap_or("unknown");
         match event {
             StepEvent::ToolCall {
                 tool_name, args, ..
             } => {
-                if let Err(e) = log.tool_call("coordinator", tool_name, args) {
+                if let Err(e) = log.tool_call(name, tool_name, args) {
                     tracing::warn!("audit: tool_call failed: {e}");
                 }
             }
@@ -170,7 +173,7 @@ impl<M: CompletionModel + 'static> AgentHook<M> for AuditHook {
                 } else {
                     summary
                 };
-                if let Err(e) = log.tool_result("coordinator", tool_name, &summary) {
+                if let Err(e) = log.tool_result(name, tool_name, &summary) {
                     tracing::warn!("audit: tool_result failed: {e}");
                 }
             }
@@ -179,7 +182,7 @@ impl<M: CompletionModel + 'static> AgentHook<M> for AuditHook {
                 content,
                 usage,
             } => {
-                if let Err(e) = log.agent_thinking("coordinator") {
+                if let Err(e) = log.agent_thinking(name) {
                     tracing::warn!("audit: agent_thinking failed: {e}");
                 }
                 {
@@ -197,7 +200,7 @@ impl<M: CompletionModel + 'static> AgentHook<M> for AuditHook {
                     } else {
                         summary
                     };
-                    if let Err(e) = log.agent_response("coordinator", &summary) {
+                    if let Err(e) = log.agent_response(name, &summary) {
                         tracing::warn!("audit: agent_response failed: {e}");
                     }
                 }

@@ -48,6 +48,7 @@ pub fn build<M: CompletionModel + 'static>(
     audit_log: Option<Arc<AuditLog>>,
 ) -> anyhow::Result<Agent<M>> {
     let mut builder = AgentBuilder::new(model)
+        .name("artifacts_agent")
         .preamble(ARTIFACTS_PREAMBLE)
         .temperature(0.2)
         .tool(kube_client::ListNamespaces {

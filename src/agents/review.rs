@@ -62,6 +62,7 @@ pub fn build<M: CompletionModel + 'static>(
     audit_log: Option<Arc<AuditLog>>,
 ) -> anyhow::Result<Agent<M>> {
     let mut builder = AgentBuilder::new(model)
+        .name("review_agent")
         .preamble(REVIEW_PREAMBLE)
         .temperature(0.0)
         .tool_server_handle(tool_handle)

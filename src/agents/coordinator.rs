@@ -103,6 +103,7 @@ impl<M: CompletionModel + 'static> Coordinator<M> {
         let mcp_connections = crate::mcp::client::connect_all(&mcp_servers, &tool_handle).await;
 
         let mut agent_builder = AgentBuilder::new(model)
+            .name("coordinator_agent")
             .preamble(COORDINATOR_PREAMBLE)
             .temperature(0.1)
             .default_max_turns(10)

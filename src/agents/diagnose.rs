@@ -45,6 +45,7 @@ pub fn build<M: CompletionModel + 'static>(
     audit_log: Option<Arc<AuditLog>>,
 ) -> anyhow::Result<Agent<M>> {
     let mut builder = AgentBuilder::new(model)
+        .name("diagnostics_agent")
         .preamble(DIAGNOSE_PREAMBLE)
         .temperature(0.0)
         .tool(kube_client::GetNodes {
