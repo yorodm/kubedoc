@@ -3,14 +3,16 @@ use std::sync::Arc;
 use kube::Client;
 use rig_core::{
     agent::{Agent, AgentBuilder},
-    completion::{CompletionModel, Prompt},
+    completion::CompletionModel,
     tool::Tool,
 };
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use crate::tools::artifacts as file_tools;
 use crate::{
-    agents::{SubAgentArgs, SubAgentError, SubAgentOutput, SubAgentTool},
+    agents::{SubAgentArgs, SubAgentError, SubAgentKind, SubAgentOutput, SubAgentTool},
     tui::progress::{ProgressEvent, ProgressHook},
 };
 use crate::{
@@ -63,7 +65,8 @@ pub fn build<M: CompletionModel + 'static>(
         .tool(file_tools::ListAvailableApiResources {
             client: client.clone(),
         })
-        .default_max_turns(20);
+        .output_schema::<ArtifactOutput>()
+        .default_max_turns(10);
 
     if let Some(log) = audit_log {
         builder = builder.add_hook(AuditHook::new(log));
@@ -78,6 +81,21 @@ pub fn build<M: CompletionModel + 'static>(
 
 pub struct ArtifactAgent {}
 
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ArtifactOutput {
+    pub summary: String,
+    #[serde(default)]
+    pub files_created: Vec<String>,
+    #[serde(default)]
+    pub files_modified: Vec<String>,
+    #[serde(default)]
+    pub validation_errors: Vec<String>,
+}
+
+impl SubAgentKind for ArtifactAgent {
+    type Output = ArtifactOutput;
+}
+
 impl<M: CompletionModel + 'static> Tool for SubAgentTool<M, ArtifactAgent> {
     const NAME: &'static str = "artifacts";
 
@@ -85,7 +103,7 @@ impl<M: CompletionModel + 'static> Tool for SubAgentTool<M, ArtifactAgent> {
 
     type Args = SubAgentArgs;
 
-    type Output = SubAgentOutput;
+    type Output = SubAgentOutput<ArtifactOutput>;
 
     fn description(&self) -> String {
         "Generate Kubernetes YAML manifests for deployments, services, configmaps, and other resources.
@@ -97,15 +115,6 @@ impl<M: CompletionModel + 'static> Tool for SubAgentTool<M, ArtifactAgent> {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        let full_task = match args.context {
-            Some(ctx) if !ctx.trim().is_empty() => format!("{}\n\n{}", ctx.trim(), args.task),
-            _ => args.task,
-        };
-        let result = self
-            .agent
-            .prompt(full_task)
-            .await
-            .map_err(|e| SubAgentError(e.to_string()))?;
-        Ok(SubAgentOutput { result })
+        self.call_agent(args).await
     }
 }

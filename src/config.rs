@@ -42,7 +42,6 @@ pub struct McpServerConfig {
     pub command: Option<Vec<String>>,
     pub url: Option<String>,
 }
-
 impl KubedocConfig {
     /// Load config from file, then apply env var overrides, then CLI arg overrides.
     pub fn load(config_path: Option<&str>, cli: &crate::cli::Cli) -> anyhow::Result<Self> {

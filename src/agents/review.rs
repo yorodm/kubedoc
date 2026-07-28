@@ -2,44 +2,28 @@ use std::sync::Arc;
 
 use rig_core::{
     agent::{Agent, AgentBuilder},
-    completion::{CompletionModel, Prompt},
-    tool::{Tool, server::ToolServerHandle},
+    completion::CompletionModel,
+    tool::Tool,
 };
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use crate::{
-    agents::SubAgentTool,
+    agents::{SubAgentArgs, SubAgentError, SubAgentKind, SubAgentOutput, SubAgentTool},
     audit::{AuditHook, AuditLog},
-};
-use crate::{
-    agents::{SubAgentArgs, SubAgentError, SubAgentOutput},
     tui::progress::{ProgressEvent, ProgressHook},
 };
 
 const REVIEW_PREAMBLE: &str = r#"
-You are a Kubernetes performance analyst. You have MCP tools available for
-querying cluster metrics (Prometheus, etc.) directly. You can also receive
-cluster state data passed from the coordinator.
+You are a Kubernetes performance reviewer. Your only job is to analyze the
+cluster state data provided by the coordinator (which comes from the diagnose
+agent) and produce a structured review.
 
-Your job is to analyze performance using both the data the coordinator provides
-and the metrics you can query yourself via your tools.
+You have NO tools — you cannot query the cluster or any external system.
+You work exclusively with the data passed to you in the task context.
 
-CAPABILITIES:
-- Query CPU/memory utilization and performance trends via MCP tools (Prometheus).
-- Analyze received cluster state data (nodes, pods, deployments, etc.).
-- Identify bottlenecks and recommend improvements.
-
-CRITICAL RULES:
-- Do NOT call other sub-agents (diagnose, artifacts) — they are for the
-  coordinator to manage. Only use your MCP tools for metrics queries.
-- If the coordinator did NOT provide cluster state data, state: "No cluster data
-  provided — the coordinator must call diagnose first."
-- If you need metrics data (e.g., CPU/memory utilization trends), use your
-  available MCP tools to query it directly. Do NOT ask the coordinator for it.
-- If you have sufficient data, assess performance, identify bottlenecks, and
-  recommend improvements.
-
-Focus on:
+Your job is to analyze:
 - Node capacity and resource pressure
 - Pod resource requests and limits
 - Pods with high restart counts
@@ -52,12 +36,14 @@ Provide a structured performance review with sections for:
 - Bottlenecks: identified performance constraints
 - Recommendations: specific, actionable improvements
 
-Be concise and data-driven. Query metrics proactively when relevant.
+If the coordinator did NOT provide cluster state data, state: "No cluster data
+provided — the coordinator must call diagnose first."
+
+Be concise and data-driven. Do NOT call any tools — you have none.
 "#;
 
 pub fn build<M: CompletionModel + 'static>(
     model: M,
-    tool_handle: ToolServerHandle,
     progress_tx: Option<mpsc::UnboundedSender<ProgressEvent>>,
     audit_log: Option<Arc<AuditLog>>,
 ) -> anyhow::Result<Agent<M>> {
@@ -65,8 +51,8 @@ pub fn build<M: CompletionModel + 'static>(
         .name("review_agent")
         .preamble(REVIEW_PREAMBLE)
         .temperature(0.0)
-        .tool_server_handle(tool_handle)
-        .default_max_turns(10);
+        .output_schema::<ReviewOutput>()
+        .default_max_turns(1);
 
     if let Some(log) = audit_log {
         builder = builder.add_hook(AuditHook::new(log));
@@ -81,6 +67,19 @@ pub fn build<M: CompletionModel + 'static>(
 
 pub struct ReviewAgent {}
 
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ReviewOutput {
+    pub summary: String,
+    #[serde(default)]
+    pub bottlenecks: Vec<String>,
+    #[serde(default)]
+    pub recommendations: Vec<String>,
+}
+
+impl SubAgentKind for ReviewAgent {
+    type Output = ReviewOutput;
+}
+
 impl<M: CompletionModel + 'static> Tool for SubAgentTool<M, ReviewAgent> {
     const NAME: &'static str = "review";
 
@@ -88,7 +87,7 @@ impl<M: CompletionModel + 'static> Tool for SubAgentTool<M, ReviewAgent> {
 
     type Args = SubAgentArgs;
 
-    type Output = SubAgentOutput;
+    type Output = SubAgentOutput<ReviewOutput>;
 
     fn description(&self) -> String {
         "Analyze cluster performance, identify bottlenecks, and recommend improvements. Use this for performance-related questions.".to_string()
@@ -99,15 +98,6 @@ impl<M: CompletionModel + 'static> Tool for SubAgentTool<M, ReviewAgent> {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        let full_task = match args.context {
-            Some(ctx) if !ctx.trim().is_empty() => format!("{}\n\n{}", ctx.trim(), args.task),
-            _ => args.task,
-        };
-        let result = self
-            .agent
-            .prompt(full_task)
-            .await
-            .map_err(|e| SubAgentError(e.to_string()))?;
-        Ok(SubAgentOutput { result })
+        self.call_agent(args).await
     }
 }

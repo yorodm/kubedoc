@@ -12,7 +12,9 @@ use rig_core::{
 use tokio::sync::mpsc;
 
 use crate::{
-    agents::{SubAgentTool, artifacts::ArtifactAgent},
+    agents::{
+        SubAgentTool, artifacts::ArtifactAgent, diagnose::DiagnoseAgent, review::ReviewAgent,
+    },
     tui::progress::{ProgressEvent, ProgressHook},
 };
 
@@ -24,12 +26,13 @@ each with their own capabilities. You delegate tasks to the appropriate
 sub-agent and summarize their results.
 
 Agent capabilities:
-- diagnose: Cluster inspection and issue diagnosis. Has direct K8s tools (nodes,
-  pods, events, deployments, services, configmaps, node details, pod logs).
+- diagnose: Cluster inspection and issue diagnosis. Has direct K8s tools
+  (nodes, pods, events, deployments, services, configmaps, node details, pod
+  logs) plus optional MCP tools (Prometheus metrics, etc.) for richer analysis.
   Call this first to gather cluster state data.
-- review: Performance analysis. Has direct access to MCP metrics tools
-  (Prometheus) for querying CPU/memory utilization and trends. Call this for
-  performance-related questions — it can gather metrics itself.
+- review: Performance analysis. Receives cluster data from the coordinator
+  (which you pass as context) and produces a structured review. Has no tools.
+  Call this for performance-related questions after diagnose has gathered data.
 - artifacts: Kubernetes YAML manifest generation. Has limited K8s inspection
   tools + file I/O tools (write/read/list). Call this when the user wants to
   create or modify resources.
@@ -67,8 +70,18 @@ impl<M: CompletionModel + 'static> Coordinator<M> {
         conversation_id: String,
         progress_tx: Option<mpsc::UnboundedSender<ProgressEvent>>,
     ) -> anyhow::Result<Self> {
+        // MCP tool handle shared with the diagnose agent
+        let mcp_handle = ToolServer::new().run();
+
         let diagnose = crate::agents::diagnose::build(
             client.clone(),
+            model.clone(),
+            mcp_handle.clone(),
+            progress_tx.clone(),
+            audit_log.clone(),
+        )
+        .await?;
+        let review = crate::agents::review::build(
             model.clone(),
             progress_tx.clone(),
             audit_log.clone(),
@@ -80,27 +93,8 @@ impl<M: CompletionModel + 'static> Coordinator<M> {
             audit_log.clone(),
         )?;
 
-        // Coordinator's tool server: sub-agents + MCP tools
-        let tool_handle = ToolServer::new().run();
-
-        // Build review with a clone of the handle so it can access MCP tools (Prometheus)
-        let review = crate::agents::review::build(
-            model.clone(),
-            tool_handle.clone(),
-            progress_tx.clone(),
-            audit_log.clone(),
-        )?;
-        tool_handle.add_tool(diagnose).await?;
-        tool_handle
-            .add_tool(SubAgentTool::<_, ArtifactAgent>::new(review))
-            .await?;
-        tool_handle
-            .add_tool(SubAgentTool::<_, ArtifactAgent>::new(artifacts))
-            .await?;
-
-        // Connect to MCP servers — their tools are registered on the same handle,
-        // accessible by both the coordinator and the review agent
-        let mcp_connections = crate::mcp::client::connect_all(&mcp_servers, &tool_handle).await;
+        // Connect MCP servers onto the shared handle (visible to diagnose)
+        let mcp_connections = crate::mcp::client::connect_all(&mcp_servers, &mcp_handle).await;
 
         let mut agent_builder = AgentBuilder::new(model)
             .name("coordinator_agent")
@@ -109,7 +103,9 @@ impl<M: CompletionModel + 'static> Coordinator<M> {
             .default_max_turns(10)
             .memory(memory)
             .conversation(conversation_id)
-            .tool_server_handle(tool_handle);
+            .tool(SubAgentTool::<_, DiagnoseAgent>::new(diagnose))
+            .tool(SubAgentTool::<_, ReviewAgent>::new(review))
+            .tool(SubAgentTool::<_, ArtifactAgent>::new(artifacts));
 
         if let Some(log) = audit_log {
             agent_builder = agent_builder.add_hook(crate::audit::AuditHook::new(log));

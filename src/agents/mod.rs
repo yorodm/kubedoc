@@ -1,6 +1,8 @@
 use std::marker::PhantomData;
 
 use rig_core::{agent::Agent, completion::CompletionModel};
+use rig_core::completion::Prompt;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -8,6 +10,12 @@ pub mod artifacts;
 pub mod coordinator;
 pub mod diagnose;
 pub mod review;
+
+pub trait SubAgentKind {
+    type Output: Serialize + DeserializeOwned + JsonSchema + Default + Send;
+}
+
+use serde::de::DeserializeOwned;
 
 #[derive(Debug, Deserialize)]
 pub struct SubAgentArgs {
@@ -39,23 +47,39 @@ impl SubAgentArgs {
 }
 
 #[derive(Serialize)]
-pub struct SubAgentOutput {
+pub struct SubAgentOutput<O> {
     pub result: String,
+    pub data: O,
 }
-pub struct SubAgentTool<M: CompletionModel, SubAgent> {
+
+pub struct SubAgentTool<M: CompletionModel, S: SubAgentKind> {
     agent: Agent<M>,
-    p: PhantomData<SubAgent>,
+    p: PhantomData<S>,
 }
 
 #[derive(Debug, thiserror::Error)]
 #[error("spawn_agent error: {0}")]
 pub struct SubAgentError(String);
 
-impl<M: CompletionModel, SubAgent> SubAgentTool<M, SubAgent> {
+impl<M: CompletionModel + 'static, S: SubAgentKind> SubAgentTool<M, S> {
     pub fn new(agent: Agent<M>) -> Self {
         Self {
             agent,
             p: PhantomData,
         }
+    }
+
+    pub async fn call_agent(&self, args: SubAgentArgs) -> Result<SubAgentOutput<S::Output>, SubAgentError> {
+        let full_task = match args.context {
+            Some(ctx) if !ctx.trim().is_empty() => format!("{}\n\n{}", ctx.trim(), args.task),
+            _ => args.task,
+        };
+        let result = self
+            .agent
+            .prompt(full_task)
+            .await
+            .map_err(|e| SubAgentError(e.to_string()))?;
+        let data = serde_json::from_str(&result).unwrap_or_default();
+        Ok(SubAgentOutput { result, data })
     }
 }

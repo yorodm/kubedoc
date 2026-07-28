@@ -165,7 +165,7 @@ api_key_env = "OPENAI_API_KEY"   # env var holding the API key
 # kubeconfig_path = ""           # defaults to ~/.kube/config
 # context = ""                   # override kubeconfig's current-context
 
-# [[mcp_servers]]
+# [[mcp.servers]]
 # name = "prometheus"
 # command = ["prometheus-mcp-server"]
 "#,
