@@ -22,6 +22,8 @@ pub struct SubAgentArgs {
     pub task: String,
     #[serde(default)]
     pub context: Option<String>,
+    #[serde(default)]
+    pub diagnosis: Option<serde_json::Value>,
 }
 
 impl SubAgentArgs {
@@ -39,6 +41,12 @@ impl SubAgentArgs {
                     "type": "string",
                     "description": "Optional extra context or constraints prepended to \
                         the task (e.g. 'The current status of the cluster is ')."
+                },
+                "diagnosis": {
+                    "type": "object",
+                    "description": "Optional structured diagnosis from the diagnose agent. \
+                        Pass this when calling artifacts to fix diagnosed issues, or review \
+                        to analyze diagnosed problems. Contains: summary, root_causes, recommendations."
                 }
             },
             "required": ["task"]
@@ -48,6 +56,7 @@ impl SubAgentArgs {
 
 #[derive(Serialize)]
 pub struct SubAgentOutput<O> {
+    pub summary: String,
     pub result: String,
     pub data: O,
 }
@@ -70,16 +79,33 @@ impl<M: CompletionModel + 'static, S: SubAgentKind> SubAgentTool<M, S> {
     }
 
     pub async fn call_agent(&self, args: SubAgentArgs) -> Result<SubAgentOutput<S::Output>, SubAgentError> {
-        let full_task = match args.context {
-            Some(ctx) if !ctx.trim().is_empty() => format!("{}\n\n{}", ctx.trim(), args.task),
-            _ => args.task,
-        };
+        let mut parts = Vec::new();
+        if let Some(diag) = args.diagnosis {
+            if !diag.is_null() {
+                parts.push(format!(
+                    "PREVIOUS DIAGNOSIS:\n{}",
+                    serde_json::to_string_pretty(&diag).unwrap_or_default()
+                ));
+            }
+        }
+        if let Some(ctx) = args.context {
+            let trimmed = ctx.trim().to_string();
+            if !trimmed.is_empty() {
+                parts.push(trimmed);
+            }
+        }
+        parts.push(args.task);
+        let full_task = parts.join("\n\n");
         let result = self
             .agent
             .prompt(full_task)
             .await
             .map_err(|e| SubAgentError(e.to_string()))?;
-        let data = serde_json::from_str(&result).unwrap_or_default();
-        Ok(SubAgentOutput { result, data })
+        let data: S::Output = serde_json::from_str(&result).unwrap_or_default();
+        let summary = serde_json::from_str::<serde_json::Value>(&result)
+            .ok()
+            .and_then(|v| v.get("summary").and_then(|s| s.as_str().map(String::from)))
+            .unwrap_or_default();
+        Ok(SubAgentOutput { summary, result, data })
     }
 }

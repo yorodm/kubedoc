@@ -145,6 +145,12 @@ pub struct ConfigMapListResult {
     pub configmaps: Vec<ConfigMapState>,
 }
 
+// --- Helper: wrap result with LLM-friendly summary ---
+
+fn with_summary<T: Serialize>(summary: String, data: T) -> serde_json::Value {
+    json!({ "summary": summary, "data": data })
+}
+
 // --- Error type ---
 
 #[derive(Debug, thiserror::Error)]
@@ -449,6 +455,80 @@ pub fn configmap_state(cm: &ConfigMap) -> ConfigMapState {
     }
 }
 
+// --- GatherClusterState (batched parallel query) ---
+
+#[derive(Serialize)]
+pub struct ClusterState {
+    pub nodes: NodeListResult,
+    pub pods: PodListResult,
+    pub events: EventListResult,
+    pub deployments: DeploymentListResult,
+}
+
+pub struct GatherClusterState {
+    pub client: Client,
+}
+
+impl Tool for GatherClusterState {
+    const NAME: &'static str = "gather_cluster_state";
+
+    type Error = KubeToolError;
+    type Args = NoArgs;
+    type Output = serde_json::Value;
+
+    fn description(&self) -> String {
+        "Query nodes, pods, events, and deployments in parallel and return them as a single result. Use this instead of calling get_nodes + get_pods + get_events + get_deployments separately.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {}
+        })
+    }
+
+    async fn call(&self, _args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let client = self.client.clone();
+        let (nodes_res, pods_res, events_res, deployments_res) = tokio::join!(
+            async {
+                let api: Api<Node> = Api::all(client.clone());
+                let list = api.list(&ListParams::default().limit(500)).await?;
+                let nodes: Vec<NodeState> = list.items.iter().map(node_state).collect();
+                Ok::<_, KubeToolError>(NodeListResult { count: nodes.len(), nodes })
+            },
+            async {
+                let api: Api<Pod> = Api::all(client.clone());
+                let list = api.list(&ListParams::default().limit(500)).await?;
+                let pods: Vec<PodState> = list.items.iter().map(pod_state).collect();
+                Ok::<_, KubeToolError>(PodListResult { count: pods.len(), pods })
+            },
+            async {
+                let api: Api<Event> = Api::all(client.clone());
+                let list = api.list(&ListParams::default().limit(500)).await?;
+                let events: Vec<EventState> = list.items.iter().map(event_state).collect();
+                Ok::<_, KubeToolError>(EventListResult { count: events.len(), events })
+            },
+            async {
+                let api: Api<Deployment> = Api::all(client.clone());
+                let list = api.list(&ListParams::default().limit(500)).await?;
+                let deployments: Vec<DeploymentState> = list.items.iter().map(deployment_state).collect();
+                Ok::<_, KubeToolError>(DeploymentListResult { count: deployments.len(), deployments })
+            },
+        );
+        let state = ClusterState {
+            nodes: nodes_res?,
+            pods: pods_res?,
+            events: events_res?,
+            deployments: deployments_res?,
+        };
+        let summary = format!(
+            "Cluster state: {} nodes, {} pods, {} events, {} deployments",
+            state.nodes.count, state.pods.count, state.events.count, state.deployments.count
+        );
+        Ok(with_summary(summary, state))
+    }
+}
+
 // --- Args types ---
 
 #[derive(Deserialize)]
@@ -499,11 +579,11 @@ impl Tool for ListNamespaces {
         let api: Api<Namespace> = Api::all(self.client.clone());
         let list = api.list(&ListParams::default().limit(500)).await?;
         let namespaces: Vec<NamespaceState> = list.items.iter().map(namespace_state).collect();
-        Ok(serde_json::to_value(NamespaceListResult {
+        let data = NamespaceListResult {
             count: namespaces.len(),
             namespaces,
-        })
-        .unwrap_or_default())
+        };
+        Ok(with_summary(format!("{} namespaces found", data.count), data))
     }
 }
 
@@ -535,11 +615,11 @@ impl Tool for GetNodes {
         let api: Api<Node> = Api::all(self.client.clone());
         let list = api.list(&ListParams::default().limit(500)).await?;
         let nodes: Vec<NodeState> = list.items.iter().map(node_state).collect();
-        Ok(serde_json::to_value(NodeListResult {
+        let data = NodeListResult {
             count: nodes.len(),
             nodes,
-        })
-        .unwrap_or_default())
+        };
+        Ok(with_summary(format!("{} nodes found", data.count), data))
     }
 }
 
@@ -579,11 +659,17 @@ impl Tool for GetPods {
         };
         let list = api.list(&ListParams::default().limit(500)).await?;
         let pods: Vec<PodState> = list.items.iter().map(pod_state).collect();
-        Ok(serde_json::to_value(PodListResult {
+        let data = PodListResult {
             count: pods.len(),
             pods,
-        })
-        .unwrap_or_default())
+        };
+        let ns_label = args.namespace.unwrap_or_default();
+        let summary = if ns_label.is_empty() {
+            format!("{} pods found across all namespaces", data.count)
+        } else {
+            format!("{} pods found in namespace {}", data.count, ns_label)
+        };
+        Ok(with_summary(summary, data))
     }
 }
 
@@ -623,11 +709,17 @@ impl Tool for GetEvents {
         };
         let list = api.list(&ListParams::default().limit(500)).await?;
         let events: Vec<EventState> = list.items.iter().map(event_state).collect();
-        Ok(serde_json::to_value(EventListResult {
+        let data = EventListResult {
             count: events.len(),
             events,
-        })
-        .unwrap_or_default())
+        };
+        let ns_label = args.namespace.unwrap_or_default();
+        let summary = if ns_label.is_empty() {
+            format!("{} events found across all namespaces", data.count)
+        } else {
+            format!("{} events found in namespace {}", data.count, ns_label)
+        };
+        Ok(with_summary(summary, data))
     }
 }
 
@@ -667,11 +759,17 @@ impl Tool for GetDeployments {
         };
         let list = api.list(&ListParams::default().limit(500)).await?;
         let deployments: Vec<DeploymentState> = list.items.iter().map(deployment_state).collect();
-        Ok(serde_json::to_value(DeploymentListResult {
+        let data = DeploymentListResult {
             count: deployments.len(),
             deployments,
-        })
-        .unwrap_or_default())
+        };
+        let ns_label = args.namespace.unwrap_or_default();
+        let summary = if ns_label.is_empty() {
+            format!("{} deployments found across all namespaces", data.count)
+        } else {
+            format!("{} deployments found in namespace {}", data.count, ns_label)
+        };
+        Ok(with_summary(summary, data))
     }
 }
 
@@ -711,11 +809,17 @@ impl Tool for GetServices {
         };
         let list = api.list(&ListParams::default().limit(500)).await?;
         let services: Vec<ServiceState> = list.items.iter().map(service_state).collect();
-        Ok(serde_json::to_value(ServiceListResult {
+        let data = ServiceListResult {
             count: services.len(),
             services,
-        })
-        .unwrap_or_default())
+        };
+        let ns_label = args.namespace.unwrap_or_default();
+        let summary = if ns_label.is_empty() {
+            format!("{} services found across all namespaces", data.count)
+        } else {
+            format!("{} services found in namespace {}", data.count, ns_label)
+        };
+        Ok(with_summary(summary, data))
     }
 }
 
@@ -755,11 +859,17 @@ impl Tool for GetConfigMaps {
         };
         let list = api.list(&ListParams::default().limit(500)).await?;
         let configmaps: Vec<ConfigMapState> = list.items.iter().map(configmap_state).collect();
-        Ok(serde_json::to_value(ConfigMapListResult {
+        let data = ConfigMapListResult {
             count: configmaps.len(),
             configmaps,
-        })
-        .unwrap_or_default())
+        };
+        let ns_label = args.namespace.unwrap_or_default();
+        let summary = if ns_label.is_empty() {
+            format!("{} configmaps found across all namespaces", data.count)
+        } else {
+            format!("{} configmaps found in namespace {}", data.count, ns_label)
+        };
+        Ok(with_summary(summary, data))
     }
 }
 
@@ -799,7 +909,7 @@ impl Tool for GetNodeDetails {
             KubeToolError::Other(format!("Failed to get node {}: {}", args.name, e))
         })?;
         let state = node_state(&node);
-        Ok(serde_json::to_value(state).unwrap_or_default())
+        Ok(with_summary(format!("Node: {} ({})", state.name, state.conditions.first().map(|c| c.status.as_str()).unwrap_or("unknown")), state))
     }
 }
 
