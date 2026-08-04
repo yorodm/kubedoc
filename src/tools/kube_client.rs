@@ -227,7 +227,12 @@ pub fn namespace_state(ns: &Namespace) -> NamespaceState {
 }
 
 pub fn node_state(node: &Node) -> NodeState {
-    let name = node.metadata.name.as_deref().unwrap_or("unknown").to_string();
+    let name = node
+        .metadata
+        .name
+        .as_deref()
+        .unwrap_or("unknown")
+        .to_string();
     let status = node.status.as_ref();
 
     let conditions = status
@@ -243,11 +248,13 @@ pub fn node_state(node: &Node) -> NodeState {
         })
         .unwrap_or_default();
 
-    let capacity = status.and_then(|s| s.capacity.as_ref()).map(|c| ResourceCapacity {
-        cpu: c.get("cpu").map(|v| v.0.clone()).unwrap_or_default(),
-        memory: c.get("memory").map(|v| v.0.clone()).unwrap_or_default(),
-        pods: c.get("pods").map(|v| v.0.clone()).unwrap_or_default(),
-    });
+    let capacity = status
+        .and_then(|s| s.capacity.as_ref())
+        .map(|c| ResourceCapacity {
+            cpu: c.get("cpu").map(|v| v.0.clone()).unwrap_or_default(),
+            memory: c.get("memory").map(|v| v.0.clone()).unwrap_or_default(),
+            pods: c.get("pods").map(|v| v.0.clone()).unwrap_or_default(),
+        });
 
     let addresses = status
         .and_then(|s| s.addresses.as_ref())
@@ -273,7 +280,12 @@ pub fn node_state(node: &Node) -> NodeState {
 }
 
 pub fn pod_state(pod: &Pod) -> PodState {
-    let name = pod.metadata.name.as_deref().unwrap_or("unknown").to_string();
+    let name = pod
+        .metadata
+        .name
+        .as_deref()
+        .unwrap_or("unknown")
+        .to_string();
     let namespace = pod
         .metadata
         .namespace
@@ -316,7 +328,12 @@ pub fn pod_state(pod: &Pod) -> PodState {
 }
 
 pub fn event_state(event: &Event) -> EventState {
-    let name = event.metadata.name.as_deref().unwrap_or("unknown").to_string();
+    let name = event
+        .metadata
+        .name
+        .as_deref()
+        .unwrap_or("unknown")
+        .to_string();
     let namespace = event
         .metadata
         .namespace
@@ -329,11 +346,7 @@ pub fn event_state(event: &Event) -> EventState {
         .as_deref()
         .unwrap_or("Unknown")
         .to_string();
-    let type_ = event
-        .type_
-        .as_deref()
-        .unwrap_or("Unknown")
-        .to_string();
+    let type_ = event.type_.as_deref().unwrap_or("Unknown").to_string();
     let reason = event.reason.as_deref().unwrap_or("").to_string();
     let message = event.message.as_deref().unwrap_or("").to_string();
     let count = event.count.unwrap_or(0);
@@ -391,7 +404,12 @@ fn int_or_string_display(v: &IntOrString) -> String {
 }
 
 pub fn service_state(svc: &Service) -> ServiceState {
-    let name = svc.metadata.name.as_deref().unwrap_or("unknown").to_string();
+    let name = svc
+        .metadata
+        .name
+        .as_deref()
+        .unwrap_or("unknown")
+        .to_string();
     let namespace = svc
         .metadata
         .namespace
@@ -473,7 +491,7 @@ impl Tool for GatherClusterState {
     const NAME: &'static str = "gather_cluster_state";
 
     type Error = KubeToolError;
-    type Args = NoArgs;
+    type Args = ();
     type Output = serde_json::Value;
 
     fn description(&self) -> String {
@@ -494,25 +512,38 @@ impl Tool for GatherClusterState {
                 let api: Api<Node> = Api::all(client.clone());
                 let list = api.list(&ListParams::default().limit(500)).await?;
                 let nodes: Vec<NodeState> = list.items.iter().map(node_state).collect();
-                Ok::<_, KubeToolError>(NodeListResult { count: nodes.len(), nodes })
+                Ok::<_, KubeToolError>(NodeListResult {
+                    count: nodes.len(),
+                    nodes,
+                })
             },
             async {
                 let api: Api<Pod> = Api::all(client.clone());
                 let list = api.list(&ListParams::default().limit(500)).await?;
                 let pods: Vec<PodState> = list.items.iter().map(pod_state).collect();
-                Ok::<_, KubeToolError>(PodListResult { count: pods.len(), pods })
+                Ok::<_, KubeToolError>(PodListResult {
+                    count: pods.len(),
+                    pods,
+                })
             },
             async {
                 let api: Api<Event> = Api::all(client.clone());
                 let list = api.list(&ListParams::default().limit(500)).await?;
                 let events: Vec<EventState> = list.items.iter().map(event_state).collect();
-                Ok::<_, KubeToolError>(EventListResult { count: events.len(), events })
+                Ok::<_, KubeToolError>(EventListResult {
+                    count: events.len(),
+                    events,
+                })
             },
             async {
                 let api: Api<Deployment> = Api::all(client.clone());
                 let list = api.list(&ListParams::default().limit(500)).await?;
-                let deployments: Vec<DeploymentState> = list.items.iter().map(deployment_state).collect();
-                Ok::<_, KubeToolError>(DeploymentListResult { count: deployments.len(), deployments })
+                let deployments: Vec<DeploymentState> =
+                    list.items.iter().map(deployment_state).collect();
+                Ok::<_, KubeToolError>(DeploymentListResult {
+                    count: deployments.len(),
+                    deployments,
+                })
             },
         );
         let state = ClusterState {
@@ -537,9 +568,6 @@ pub struct NamespaceArgs {
 }
 
 #[derive(Deserialize)]
-pub struct NoArgs;
-
-#[derive(Deserialize)]
 pub struct NodeNameArgs {
     pub name: String,
 }
@@ -561,7 +589,7 @@ impl Tool for ListNamespaces {
     const NAME: &'static str = "list_namespaces";
 
     type Error = KubeToolError;
-    type Args = NoArgs;
+    type Args = ();
     type Output = serde_json::Value;
 
     fn description(&self) -> String {
@@ -583,7 +611,10 @@ impl Tool for ListNamespaces {
             count: namespaces.len(),
             namespaces,
         };
-        Ok(with_summary(format!("{} namespaces found", data.count), data))
+        Ok(with_summary(
+            format!("{} namespaces found", data.count),
+            data,
+        ))
     }
 }
 
@@ -597,7 +628,7 @@ impl Tool for GetNodes {
     const NAME: &'static str = "get_nodes";
 
     type Error = KubeToolError;
-    type Args = NoArgs;
+    type Args = ();
     type Output = serde_json::Value;
 
     fn description(&self) -> String {
@@ -909,7 +940,18 @@ impl Tool for GetNodeDetails {
             KubeToolError::Other(format!("Failed to get node {}: {}", args.name, e))
         })?;
         let state = node_state(&node);
-        Ok(with_summary(format!("Node: {} ({})", state.name, state.conditions.first().map(|c| c.status.as_str()).unwrap_or("unknown")), state))
+        Ok(with_summary(
+            format!(
+                "Node: {} ({})",
+                state.name,
+                state
+                    .conditions
+                    .first()
+                    .map(|c| c.status.as_str())
+                    .unwrap_or("unknown")
+            ),
+            state,
+        ))
     }
 }
 
