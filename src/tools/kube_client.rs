@@ -491,7 +491,7 @@ impl Tool for GatherClusterState {
     const NAME: &'static str = "gather_cluster_state";
 
     type Error = KubeToolError;
-    type Args = ();
+    type Args = serde_json::Value;
     type Output = serde_json::Value;
 
     fn description(&self) -> String {
@@ -589,7 +589,7 @@ impl Tool for ListNamespaces {
     const NAME: &'static str = "list_namespaces";
 
     type Error = KubeToolError;
-    type Args = ();
+    type Args = serde_json::Value;
     type Output = serde_json::Value;
 
     fn description(&self) -> String {
@@ -628,7 +628,7 @@ impl Tool for GetNodes {
     const NAME: &'static str = "get_nodes";
 
     type Error = KubeToolError;
-    type Args = ();
+    type Args = serde_json::Value;
     type Output = serde_json::Value;
 
     fn description(&self) -> String {
